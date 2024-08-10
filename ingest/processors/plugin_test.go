@@ -1,5 +1,5 @@
-//go:build !386 && !arm && !mips && !mipsle && !s390x && !go1.18
-// +build !386,!arm,!mips,!mipsle,!s390x,!go1.18
+//go:build !386 && !arm && !mips && !mipsle && !s390x && !go1.18 && !wasm && !wasi
+// +build !386,!arm,!mips,!mipsle,!s390x,!go1.18,!wasm,!wasi
 
 /*************************************************************************
  * Copyright 2018 Gravwell, Inc. All rights reserved.

@@ -21,8 +21,6 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
-	"github.com/gofrs/flock"
 )
 
 var (
@@ -57,7 +55,7 @@ type ChanCacher struct {
 	cacheIsDone    bool
 	cacheCommitted bool
 
-	fileLock *flock.Flock
+	fileLock *locker
 }
 
 // Create a new ChanCacher with maximum depth, and optional backing file.  If
@@ -154,7 +152,7 @@ func NewChanCacher(maxDepth int, cachePath string, maxSize int) (*ChanCacher, er
 		}
 
 		// set a lock for these files
-		c.fileLock = flock.New(filepath.Join(c.cachePath, "lock"))
+		c.fileLock = newLocker(filepath.Join(c.cachePath, "lock"))
 		locked, err := c.fileLock.TryLock()
 		if err != nil {
 			return nil, err
