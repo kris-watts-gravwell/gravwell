@@ -354,6 +354,8 @@ github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsT
 github.com/stretchr/testify v1.9.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
 github.com/tealeg/xlsx v1.0.5 h1:+f8oFmvY8Gw1iUXzPk+kz+4GpbDZPK1FhPiQRd+ypgE=
 github.com/tealeg/xlsx v1.0.5/go.mod h1:btRS8dz54TDnvKNosuAqxrM1QgN1udgk9O34bDCnORM=
+github.com/tetratelabs/wazero v1.7.3 h1:PBH5KVahrt3S2AHgEjKu4u+LlDbbk+nsGE3KLucy6Rw=
+github.com/tetratelabs/wazero v1.7.3/go.mod h1:ytl6Zuh20R/eROuyDaGPkp82O9C/DJfXAwJfQ3X6/7Y=
 github.com/turnage/graw v0.0.0-20191104042329-405cc3092119 h1:WpxPyCI7eEFG4Ix5m/UhTkrFZxSI6YAASpQswMn08b0=
 github.com/turnage/graw v0.0.0-20191104042329-405cc3092119/go.mod h1:mCzFVBigviR4gb9WRHCFEZ4Z8eWB1dGz+fzLOHpkG8I=
 github.com/turnage/redditproto v0.0.0-20151223012412-afedf1b6eddb h1:qR56NGRvs2hTUbkn6QF8bEJzxPIoMw3Np3UigBeJO5A=
