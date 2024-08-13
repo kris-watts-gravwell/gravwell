@@ -132,7 +132,6 @@ import (
 	utf16 "unicode/utf16"
 	utf8 "unicode/utf8"
 
-	jsonparser "github.com/buger/jsonparser"
 	rfc5424 "github.com/crewjam/rfc5424"
 	safefile "github.com/dchest/safefile"
 	glob "github.com/gobwas/glob"
@@ -1302,62 +1301,7 @@ func init() {
 		Name:         "fmt",
 		Declarations: decs,
 	}
-	// "github.com/buger/jsonparser"
-	decs = make(native.Declarations, 50)
-	decs["Array"] = jsonparser.Array
-	decs["ArrayEach"] = jsonparser.ArrayEach
-	decs["Boolean"] = jsonparser.Boolean
-	decs["Delete"] = jsonparser.Delete
-	decs["EachKey"] = jsonparser.EachKey
-	decs["FuzzDelete"] = jsonparser.FuzzDelete
-	decs["FuzzEachKey"] = jsonparser.FuzzEachKey
-	decs["FuzzGetBoolean"] = jsonparser.FuzzGetBoolean
-	decs["FuzzGetFloat"] = jsonparser.FuzzGetFloat
-	decs["FuzzGetInt"] = jsonparser.FuzzGetInt
-	decs["FuzzGetString"] = jsonparser.FuzzGetString
-	decs["FuzzGetUnsafeString"] = jsonparser.FuzzGetUnsafeString
-	decs["FuzzObjectEach"] = jsonparser.FuzzObjectEach
-	decs["FuzzParseBool"] = jsonparser.FuzzParseBool
-	decs["FuzzParseFloat"] = jsonparser.FuzzParseFloat
-	decs["FuzzParseInt"] = jsonparser.FuzzParseInt
-	decs["FuzzParseString"] = jsonparser.FuzzParseString
-	decs["FuzzSet"] = jsonparser.FuzzSet
-	decs["FuzzTokenStart"] = jsonparser.FuzzTokenStart
-	decs["Get"] = jsonparser.Get
-	decs["GetBoolean"] = jsonparser.GetBoolean
-	decs["GetFloat"] = jsonparser.GetFloat
-	decs["GetInt"] = jsonparser.GetInt
-	decs["GetString"] = jsonparser.GetString
-	decs["GetUnsafeString"] = jsonparser.GetUnsafeString
-	decs["KeyPathNotFoundError"] = &jsonparser.KeyPathNotFoundError
-	decs["MalformedArrayError"] = &jsonparser.MalformedArrayError
-	decs["MalformedJsonError"] = &jsonparser.MalformedJsonError
-	decs["MalformedObjectError"] = &jsonparser.MalformedObjectError
-	decs["MalformedStringError"] = &jsonparser.MalformedStringError
-	decs["MalformedStringEscapeError"] = &jsonparser.MalformedStringEscapeError
-	decs["MalformedValueError"] = &jsonparser.MalformedValueError
-	decs["NotExist"] = jsonparser.NotExist
-	decs["Null"] = jsonparser.Null
-	decs["Number"] = jsonparser.Number
-	decs["Object"] = jsonparser.Object
-	decs["ObjectEach"] = jsonparser.ObjectEach
-	decs["OverflowIntegerError"] = &jsonparser.OverflowIntegerError
-	decs["ParseBoolean"] = jsonparser.ParseBoolean
-	decs["ParseFloat"] = jsonparser.ParseFloat
-	decs["ParseInt"] = jsonparser.ParseInt
-	decs["ParseString"] = jsonparser.ParseString
-	decs["Set"] = jsonparser.Set
-	decs["String"] = jsonparser.String
-	decs["StringToBytes"] = jsonparser.StringToBytes
-	decs["Unescape"] = jsonparser.Unescape
-	decs["Unknown"] = jsonparser.Unknown
-	decs["UnknownValueTypeError"] = &jsonparser.UnknownValueTypeError
-	decs["ValueType"] = reflect.TypeOf((*jsonparser.ValueType)(nil)).Elem()
-	decs["WriteToBuffer"] = jsonparser.WriteToBuffer
-	packages["github.com/buger/jsonparser"] = native.Package{
-		Name:         "jsonparser",
-		Declarations: decs,
-	}
+
 	// "github.com/crewjam/rfc5424"
 	decs = make(native.Declarations, 34)
 	decs["Alert"] = rfc5424.Alert
@@ -2041,6 +1985,10 @@ func init() {
 		Name:         "jsonparser",
 		Declarations: decs,
 	}
+
+	// "github.com/buger/jsonparser" just aliases to our internal one
+	packages["github.com/buger/jsonparser"] = packages["github.com/gravwell/jsonparser"]
+
 	// "github.com/h2non/filetype"
 	decs = make(native.Declarations, 37)
 	decs["AddMatcher"] = filetype.AddMatcher
