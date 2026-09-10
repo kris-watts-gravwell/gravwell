@@ -1,0 +1,596 @@
+/*************************************************************************
+ * Copyright 2026 Gravwell, Inc. All rights reserved.
+ * Contact: <legal@gravwell.io>
+ *
+ * This software may be modified and distributed under the terms of the
+ * BSD 2-clause license. See the LICENSE file for details.
+ **************************************************************************/
+
+package dynamic
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"reflect"
+	"strings"
+	"uuid"
+)
+
+const (
+	// ingesterUUIDName is the config variable carrying the ingester UUID.  It is lifted out of
+	// the variable list into Config.UUID so that INI does not emit it twice.
+	ingesterUUIDName = `Ingester-UUID`
+
+	// maxStructDepth guards against a config type that manages to reference itself.
+	maxStructDepth = 8
+
+	// iniRawUnsafe is the set of runes the gcfg raw string scanner treats specially:
+	// a backtick, a backslash and a double quote.  A value holding none of them is
+	// copied through a backtick string verbatim.
+	iniRawUnsafe = "`" + `\"`
+)
+
+var (
+	ErrInvalidValueType = errors.New("invalid value type")
+	ErrNotAStruct       = errors.New("config must be a struct")
+	ErrUnsupportedType  = errors.New("unsupported config field type")
+	ErrUnrepresentable  = errors.New("value cannot be represented in a config file")
+
+	uuidType = reflect.TypeOf(uuid.UUID{})
+)
+
+type ValueType string
+
+const (
+	typeBool        ValueType = `bool`
+	typeInt         ValueType = `int`
+	typeUint        ValueType = `uint`
+	typeFloat       ValueType = `float`
+	typeString      ValueType = `string`
+	typeUUID        ValueType = `uuid`
+	typeSliceString ValueType = `[]string`
+	typeStruct      ValueType = `struct`
+	typeSliceStruct ValueType = `[]struct`
+)
+
+// Config represents a description of an ingester config or a populated and configured ingester.
+// This struct is used to translate a native Config type from a plugin into something that can be shipped over JSON
+// to a GUI/Webserver and drawn in a human friendly way.  It can then be sent to the ingester to be validated and
+// translated back to an INI config blob.
+type Config struct {
+	Kind      string    // what configuration type this represents
+	Name      string    // config name (key in config map for a given Kind)
+	UUID      uuid.UUID `json:",omitzero"`
+	Singleton bool      // whether more than one of this Kind can run at a time
+	Variables []Variable
+	Assigned  *Assignment `json:",omitempty"` // optional asisgnment for this config, will be empty for empty config prototypes
+}
+
+// Variable is a single value in a dynamic configuration, it may be some primative
+// type like a string, int, float, etc.. or it may be a vector of primative types.
+type Variable struct {
+	Name        string
+	Value       any `json:",omitempty"`
+	Type        ValueType
+	Description string `json:",omitempty"`
+	Required    bool
+}
+
+// Assignment is an optional assignment map that allows for pinning specific configurations to specific
+// hosted ingesters or classes of hosted ingesters
+type Assignment struct {
+	UUID  uuid.UUID `json:",omitzero"`  // used to assign to a specific ingester instance
+	Class string    `json:",omitempty"` // used to assign to a class of ingesters (hosted, http, etc...)
+	Group string    `json:",omitempty"` // used to assign to a free form group (user configured)
+}
+
+// Validate checks a variable to make sure it is appropriately populated and that if there is a Value its type
+// matches the ValueType
+func (v Variable) Validate() error {
+	if v.Name == `` {
+		return errors.New("missing Name")
+	} else if v.Type == `` {
+		return errors.New("Missing Type")
+	} else if err := v.Type.Valid(); err != nil {
+		return err
+	}
+	if v.Value == nil {
+		return nil // nothing to check, an empty prototype or an unset variable is fine
+	}
+	switch val := v.Value.(type) {
+	case bool:
+		return v.requireType(typeBool)
+	case int, int8, int16, int32, int64:
+		return v.requireType(typeInt)
+	case uint, uint8, uint16, uint32, uint64:
+		return v.requireType(typeUint)
+	case float32:
+		return v.requireType(typeFloat)
+	case float64:
+		// encoding/json hands back every number as a float64, so an integral
+		// float64 is also an acceptable int or uint
+		switch v.Type {
+		case typeFloat:
+		case typeInt:
+			if val != math.Trunc(val) {
+				return v.typeMismatch()
+			}
+		case typeUint:
+			if val != math.Trunc(val) || val < 0 {
+				return v.typeMismatch()
+			}
+		default:
+			return v.typeMismatch()
+		}
+	case string:
+		switch v.Type {
+		case typeString:
+		case typeUUID:
+			if _, err := uuid.Parse(val); err != nil {
+				return fmt.Errorf("Value %q is not a valid uuid: %w", val, err)
+			}
+		default:
+			return v.typeMismatch()
+		}
+	case uuid.UUID:
+		return v.requireType(typeUUID)
+	case []string:
+		return v.requireType(typeSliceString)
+	case []any:
+		// encoding/json hands back every array as a []any, so walk it to see what we really have
+		switch v.Type {
+		case typeSliceString:
+			for i, x := range val {
+				if _, ok := x.(string); !ok {
+					return fmt.Errorf("Value element %d is a %T, not a string", i, x)
+				}
+			}
+		case typeSliceStruct:
+			for i, x := range val {
+				if _, ok := x.(map[string]any); !ok {
+					return fmt.Errorf("Value element %d is a %T, not a struct", i, x)
+				}
+			}
+		default:
+			return v.typeMismatch()
+		}
+	case map[string]any:
+		return v.requireType(typeStruct)
+	case []map[string]any:
+		return v.requireType(typeSliceStruct)
+	case []Variable:
+		if v.Type != typeStruct {
+			return v.typeMismatch()
+		}
+		for _, sub := range val {
+			if err := sub.Validate(); err != nil {
+				return fmt.Errorf("member %s is invalid: %w", sub.Name, err)
+			}
+		}
+	case [][]Variable:
+		if v.Type != typeSliceStruct {
+			return v.typeMismatch()
+		}
+		for i, members := range val {
+			for _, sub := range members {
+				if err := sub.Validate(); err != nil {
+					return fmt.Errorf("element %d member %s is invalid: %w", i, sub.Name, err)
+				}
+			}
+		}
+	default:
+		return fmt.Errorf("Value type %T is not a supported dynamic config type", v.Value)
+	}
+	return nil
+}
+
+// requireType checks that the Variable is declared as the given ValueType.
+func (v Variable) requireType(vt ValueType) error {
+	if v.Type != vt {
+		return v.typeMismatch()
+	}
+	return nil
+}
+
+// iniValueString renders s for the right hand side of an INI assignment.
+//
+// A raw backtick string is used when it is provably safe, purely because it is far easier
+// to read in a config file.  The gcfg raw string scanner treats exactly three runes
+// specially: a backtick terminates the string, a backslash sets its escape state, and a
+// double quote gets escaped.  Every other rune is copied through verbatim, so a value
+// holding none of those three cannot be altered by it no matter how that escaping logic
+// changes.  Anything else takes the double quoted path, which is total over the values we
+// support, so this is an optimization and never a correctness requirement.
+func iniValueString(s string) (string, error) {
+	if !strings.ContainsAny(s, iniRawUnsafe) {
+		return "`" + s + "`", nil
+	}
+	return iniQuote(s)
+}
+
+// iniQuote renders s as a gcfg double quoted string.  This is the general path and can
+// carry any value a config supports, including backticks and embedded newlines.
+//
+// The one exception is control characters.  The gcfg scanner understands exactly four
+// escapes, \\ \" \n and \t, and has no numeric escape, so a control character other than
+// a newline or a tab simply cannot be written into a config file.  Configs are not
+// expected to carry them, so rather than mangle the value we reject it with
+// ErrUnrepresentable and let the caller report a real error.
+func iniQuote(s string) (string, error) {
+	var sb strings.Builder
+	sb.Grow(len(s) + 2)
+	sb.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			sb.WriteString(`\\`)
+		case '"':
+			sb.WriteString(`\"`)
+		case '\n':
+			sb.WriteString(`\n`)
+		case '\t':
+			sb.WriteString(`\t`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				return ``, fmt.Errorf("%w: control character %q", ErrUnrepresentable, r)
+			}
+			sb.WriteRune(r)
+		}
+	}
+	sb.WriteByte('"')
+	return sb.String(), nil
+}
+
+// emitInitLine just encodes a variable into our INI line format
+func (v Variable) emitIniLine(w io.Writer, prefix string) (err error) {
+	// if the value is empty, do nothing
+	if v.Value == nil {
+		return
+	}
+	switch v.Type {
+	case typeBool, typeInt, typeUint:
+		fmt.Fprintf(w, "%s%s=%v\n", prefix, v.Name, v.Value)
+	case typeFloat:
+		// %v uses the shortest representation that parses back exactly, %f would
+		// silently truncate the value to six decimal places
+		fmt.Fprintf(w, "%s%s=%v\n", prefix, v.Name, v.Value)
+	case typeString:
+		var q string
+		if q, err = v.quote(fmt.Sprintf("%s", v.Value)); err != nil {
+			return
+		}
+		fmt.Fprintf(w, "%s%s=%s\n", prefix, v.Name, q)
+	case typeUUID:
+		// a uuid is only ever hex and dashes, it can never need escaping
+		switch uv := v.Value.(type) {
+		case string:
+			fmt.Fprintf(w, "%s%s=%q\n", prefix, v.Name, uv)
+		case uuid.UUID:
+			fmt.Fprintf(w, "%s%s=%q\n", prefix, v.Name, uv.String())
+		default:
+			err = v.typeMismatch()
+		}
+	case typeSliceString:
+		var set []string
+		if set, err = v.stringSet(); err != nil {
+			return
+		}
+		for _, x := range set {
+			var q string
+			if q, err = v.quote(x); err != nil {
+				return
+			}
+			fmt.Fprintf(w, "%s%s=%s\n", prefix, v.Name, q)
+		}
+	case typeStruct:
+		// TODO
+	case typeSliceStruct:
+		// TODO
+	}
+	return
+}
+
+// quote renders one of this variable's strings for an INI line, naming the variable on failure.
+func (v Variable) quote(s string) (q string, err error) {
+	if q, err = iniValueString(s); err != nil {
+		err = fmt.Errorf("%s: %w", v.Name, err)
+	}
+	return
+}
+
+// stringSet pulls a typeSliceString value out as a []string.  A JSON round trip hands the
+// slice back as a []any, so accept that shape too rather than silently emitting nothing.
+func (v Variable) stringSet() (set []string, err error) {
+	switch sv := v.Value.(type) {
+	case []string:
+		set = sv
+	case []any:
+		set = make([]string, 0, len(sv))
+		for i, x := range sv {
+			str, ok := x.(string)
+			if !ok {
+				err = fmt.Errorf("%s element %d is a %T, not a string", v.Name, i, x)
+				return
+			}
+			set = append(set, str)
+		}
+	default:
+		err = fmt.Errorf("%s: %w", v.Name, v.typeMismatch())
+	}
+	return
+}
+
+// typeMismatch reports that the concrete type of Value disagrees with the declared ValueType.
+func (v Variable) typeMismatch() error {
+	return fmt.Errorf("Value type %T does not match ValueType %s", v.Value, v.Type)
+}
+
+// ValidType checks that the given ValueType is one that we know how to handle.
+// An unrecognized type results in an error wrapping ErrInvalidValueType.
+func (vt ValueType) Valid() (err error) {
+	switch vt {
+	case typeBool:
+	case typeInt:
+	case typeUint:
+	case typeFloat:
+	case typeString:
+	case typeUUID:
+	case typeSliceString:
+	case typeStruct:
+	case typeSliceStruct:
+	default:
+		err = fmt.Errorf("%w %q", ErrInvalidValueType, string(vt))
+	}
+	return
+}
+
+// Complex indicates if a ValueType is not a primitive type.
+// non-primative types include slices and structs
+func (vt ValueType) Complex() bool {
+	switch vt {
+	case typeBool:
+	case typeInt:
+	case typeUint:
+	case typeFloat:
+	case typeString:
+	case typeUUID:
+	case typeSliceString:
+	default:
+		return true
+	}
+	return false
+}
+
+// MapConfig takes a native plugin config struct and maps it to the dynamic Config structure.
+// Embedded structs are flattened, because gcfg promotes them into the parent INI section.
+// Unexported members are skipped, they are derived at verify time and are not config.
+// A member tagged json:"-" is a secret; the variable is described but its value is never
+// populated.  Zero valued members are described without a value, so handing this a zero
+// struct yields an empty prototype and handing it a populated struct yields a populated config.
+func MapConfig(kind, name string, v any) (c Config, err error) {
+	if kind == `` {
+		err = errors.New("empty kind")
+		return
+	} else if name == `` {
+		err = errors.New("empty name")
+		return
+	} else if v == nil {
+		err = fmt.Errorf("%w, got nil", ErrNotAStruct)
+		return
+	}
+	rv := derefValue(reflect.ValueOf(v))
+	if rv.Kind() != reflect.Struct {
+		err = fmt.Errorf("%w, got %T", ErrNotAStruct, v)
+		return
+	}
+	var vars []Variable
+	if vars, err = mapStruct(rv, 0); err != nil {
+		return
+	}
+	c = Config{Kind: kind, Name: name, Variables: make([]Variable, 0, len(vars))}
+	for _, vr := range vars {
+		if err = vr.Validate(); err != nil {
+			err = fmt.Errorf("%s produced an invalid variable: %w", vr.Name, err)
+			return
+		}
+		if vr.Name == ingesterUUIDName {
+			// INI writes this from Config.UUID, keep it out of the variable set
+			if s, ok := vr.Value.(string); ok {
+				if c.UUID, err = uuid.Parse(s); err != nil {
+					err = fmt.Errorf("Invalid Ingester-UUID %q %w", s, err)
+					return
+				}
+			}
+			continue
+		}
+		c.Variables = append(c.Variables, vr)
+	}
+	return
+}
+
+// mapStruct walks the exported members of a struct and produces a Variable for each,
+// flattening any embedded structs into the same list.
+func mapStruct(rv reflect.Value, depth int) (vars []Variable, err error) {
+	if depth > maxStructDepth {
+		err = fmt.Errorf("config is nested deeper than %d structs", maxStructDepth)
+		return
+	}
+	rt := rv.Type()
+	for i := range rt.NumField() {
+		f := rt.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if f.Anonymous && derefType(f.Type).Kind() == reflect.Struct {
+			var sub []Variable
+			if sub, err = mapStruct(derefValue(rv.Field(i)), depth+1); err != nil {
+				return
+			}
+			vars = append(vars, sub...)
+			continue
+		}
+		var nv Variable
+		if nv, err = mapField(f, rv.Field(i), depth); err != nil {
+			return
+		}
+		vars = append(vars, nv)
+	}
+	return
+}
+
+// mapField produces a single Variable from a struct member.
+func mapField(f reflect.StructField, fv reflect.Value, depth int) (v Variable, err error) {
+	v.Name = iniName(f)
+	ft := derefType(f.Type)
+	if v.Type, err = valueTypeOf(ft); err != nil {
+		err = fmt.Errorf("%s: %w", v.Name, err)
+		return
+	}
+	if f.Tag.Get(`json`) == `-` {
+		return // a secret, describe it so a GUI can ask for it but never ship the current value
+	}
+	if fv = derefValue(fv); !fv.IsValid() || fv.IsZero() {
+		return // unset, leave Value nil
+	}
+	if v.Value, err = fieldValue(v.Type, fv, depth); err != nil {
+		err = fmt.Errorf("%s: %w", v.Name, err)
+	}
+	return
+}
+
+// iniName returns the name gcfg would match this member against, honoring a gcfg ident
+// override and otherwise swapping the underscores in the Go name for dashes.
+func iniName(f reflect.StructField) string {
+	if ident, _, _ := strings.Cut(f.Tag.Get(`gcfg`), `,`); ident != `` {
+		return ident
+	}
+	return strings.ReplaceAll(f.Name, `_`, `-`)
+}
+
+// valueTypeOf maps a Go type onto the ValueType used to describe it.
+func valueTypeOf(t reflect.Type) (vt ValueType, err error) {
+	if t == uuidType {
+		return typeUUID, nil
+	}
+	switch t.Kind() {
+	case reflect.Bool:
+		vt = typeBool
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		vt = typeInt
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		vt = typeUint
+	case reflect.Float32, reflect.Float64:
+		vt = typeFloat
+	case reflect.String:
+		vt = typeString // named string types (mimecast Api, msgraph ContentType) land here too
+	case reflect.Struct:
+		vt = typeStruct
+	case reflect.Slice:
+		et := derefType(t.Elem())
+		switch {
+		case et == uuidType:
+			err = fmt.Errorf("%w %s", ErrUnsupportedType, t)
+		case et.Kind() == reflect.String:
+			vt = typeSliceString
+		case et.Kind() == reflect.Struct:
+			vt = typeSliceStruct
+		default:
+			err = fmt.Errorf("%w %s", ErrUnsupportedType, t)
+		}
+	default:
+		err = fmt.Errorf("%w %s", ErrUnsupportedType, t)
+	}
+	return
+}
+
+// fieldValue extracts a member's value in the representation Variable.Validate expects.
+func fieldValue(vt ValueType, fv reflect.Value, depth int) (val any, err error) {
+	switch vt {
+	case typeBool:
+		val = fv.Bool()
+	case typeInt:
+		val = fv.Int()
+	case typeUint:
+		val = fv.Uint()
+	case typeFloat:
+		val = fv.Float()
+	case typeString:
+		val = fv.String()
+	case typeUUID:
+		val = fv.Interface().(uuid.UUID).String()
+	case typeSliceString:
+		set := make([]string, fv.Len())
+		for i := range set {
+			set[i] = derefValue(fv.Index(i)).String()
+		}
+		val = set
+	case typeStruct:
+		var sub []Variable
+		if sub, err = mapStruct(fv, depth+1); err != nil {
+			return
+		}
+		val = sub
+	case typeSliceStruct:
+		set := make([][]Variable, fv.Len())
+		for i := range set {
+			if set[i], err = mapStruct(derefValue(fv.Index(i)), depth+1); err != nil {
+				return
+			}
+		}
+		val = set
+	default:
+		err = fmt.Errorf("%w %s", ErrInvalidValueType, vt)
+	}
+	return
+}
+
+// derefType follows pointers to the type actually being pointed at.
+func derefType(t reflect.Type) reflect.Type {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t
+}
+
+// derefValue follows pointers to the value actually being pointed at.  A nil pointer yields
+// a zero value of the pointed at type so that we can still describe the variable.
+func derefValue(v reflect.Value) reflect.Value {
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return reflect.New(v.Type().Elem()).Elem()
+		}
+		v = v.Elem()
+	}
+	return v
+}
+
+// INI writes out a
+func (c Config) INI() (r string, err error) {
+	// check the required stuff
+	if c.Kind == `` {
+		err = errors.New("empty kind")
+		return
+	} else if c.Name == `` {
+		err = errors.New("empty name")
+		return
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "[%s %q]\n", c.Kind, c.Name)
+	if c.UUID != uuid.Nil() {
+		fmt.Fprintf(&sb, "\tIngester-UUID=%s\n", c.UUID)
+	}
+	var todo []Variable
+	for _, v := range c.Variables {
+		// throw the complex variables on the end to do last
+		if v.Type.Complex() {
+			todo = append(todo, v)
+			continue
+		} else if err = v.emitIniLine(&sb, "\t"); err != nil {
+			return
+		}
+	}
+	r = sb.String()
+	return
+}
