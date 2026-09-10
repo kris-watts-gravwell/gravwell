@@ -37,6 +37,7 @@ var (
 	ErrNotAStruct       = errors.New("config must be a struct")
 	ErrUnsupportedType  = errors.New("unsupported config field type")
 	ErrUnrepresentable  = errors.New("value cannot be represented in a config file")
+	ErrAmbiguousMember  = errors.New("ambiguous promoted config member")
 
 	uuidType = reflect.TypeOf(uuid.UUID{})
 )
@@ -410,9 +411,28 @@ func MapConfig(kind, name string, v any) (c Config, err error) {
 	return
 }
 
+// mappedVar is a Variable plus how far it was promoted to reach the struct being
+// flattened.  A member declared directly on that struct is depth 0, one pulled out of an
+// embedded struct is depth 1, and so on.
+type mappedVar struct {
+	Variable
+	depth int
+}
+
 // mapStruct walks the exported members of a struct and produces a Variable for each,
-// flattening any embedded structs into the same list.
+// flattening any embedded structs into the same list because gcfg promotes them into the
+// parent INI section rather than giving them a subsection.
 func mapStruct(rv reflect.Value, depth int) (vars []Variable, err error) {
+	var mapped []mappedVar
+	if mapped, err = mapStructMembers(rv, depth); err != nil {
+		return
+	}
+	return resolveShadowed(mapped)
+}
+
+// mapStructMembers does the actual walk, tracking promotion depth so that the caller can
+// apply the shadowing rules.
+func mapStructMembers(rv reflect.Value, depth int) (vars []mappedVar, err error) {
 	if depth > maxStructDepth {
 		err = fmt.Errorf("config is nested deeper than %d structs", maxStructDepth)
 		return
@@ -420,22 +440,63 @@ func mapStruct(rv reflect.Value, depth int) (vars []Variable, err error) {
 	rt := rv.Type()
 	for i := range rt.NumField() {
 		f := rt.Field(i)
-		if !f.IsExported() {
-			continue
-		}
+		// An embedded struct promotes its exported members even when the embedded type
+		// itself is unexported, and gcfg populates them happily, so recurse into it
+		// before the export check that skips an ordinary unexported member.  This is the
+		// same rule encoding/json applies when it walks a struct.
 		if f.Anonymous && derefType(f.Type).Kind() == reflect.Struct {
-			var sub []Variable
-			if sub, err = mapStruct(derefValue(rv.Field(i)), depth+1); err != nil {
+			var sub []mappedVar
+			if sub, err = mapStructMembers(derefValue(rv.Field(i)), depth+1); err != nil {
 				return
 			}
-			vars = append(vars, sub...)
+			for _, sv := range sub {
+				sv.depth++ // one promotion further out than where it was declared
+				vars = append(vars, sv)
+			}
+			continue
+		}
+		if !f.IsExported() {
 			continue
 		}
 		var nv Variable
 		if nv, err = mapField(f, rv.Field(i), depth); err != nil {
 			return
 		}
-		vars = append(vars, nv)
+		vars = append(vars, mappedVar{Variable: nv})
+	}
+	return
+}
+
+// resolveShadowed applies Go's own field promotion rules to a flattened member list: a
+// member declared closer to the outside shadows a promoted one of the same name.  That
+// matters because gcfg resolves an INI key the same way, so emitting both would write a
+// key that only ever lands on the outer member and silently leave the inner one unset.
+// Two members promoted from the same depth are genuinely ambiguous, neither Go nor gcfg
+// can address them, so that is reported rather than guessed at.
+func resolveShadowed(mapped []mappedVar) (vars []Variable, err error) {
+	shallowest := make(map[string]int, len(mapped))
+	ambiguous := make(map[string]bool, len(mapped))
+	for _, m := range mapped {
+		switch d, ok := shallowest[m.Name]; {
+		case !ok || m.depth < d:
+			shallowest[m.Name] = m.depth
+			ambiguous[m.Name] = false
+		case m.depth == d:
+			ambiguous[m.Name] = true
+		}
+	}
+	vars = make([]Variable, 0, len(mapped))
+	seen := make(map[string]bool, len(mapped))
+	for _, m := range mapped {
+		if m.depth != shallowest[m.Name] || seen[m.Name] {
+			continue // shadowed by a member closer to the outside, or already emitted
+		}
+		if ambiguous[m.Name] {
+			err = fmt.Errorf("%w %q", ErrAmbiguousMember, m.Name)
+			return
+		}
+		seen[m.Name] = true
+		vars = append(vars, m.Variable)
 	}
 	return
 }
