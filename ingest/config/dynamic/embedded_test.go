@@ -1,5 +1,5 @@
 /*************************************************************************
- * Copyright 2017 Gravwell, Inc. All rights reserved.
+ * Copyright 2026 Gravwell, Inc. All rights reserved.
  * Contact: <legal@gravwell.io>
  *
  * This software may be modified and distributed under the terms of the
@@ -18,7 +18,7 @@ import (
 )
 
 // These mirror the shared bases in the hosted package.  gcfg promotes an embedded struct
-// into the parent INI section rather than giving it a subsection, so MapConfig has to
+// into the parent INI section rather than giving it a subsection, so MapRunnerDefinition has to
 // flatten them the same way.
 
 type mockBase struct {
@@ -90,7 +90,7 @@ func TestEmbeddedFlattening(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c, err := MapConfig(tc.name, `prod`, tc.v)
+			c, err := MapRunnerDefinition(tc.name, `prod`, tc.v)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -110,18 +110,18 @@ func TestEmbeddedFlattening(t *testing.T) {
 // TestEmbeddedMatchesFlat checks that embedding produces exactly the same description as
 // writing the same members out by hand, which is the whole point of flattening.
 func TestEmbeddedMatchesFlat(t *testing.T) {
-	embedded, err := MapConfig(`mimecast`, `prod`, mockEmbeddedMimecast{
-		mockBase:     mockBase{Ingester_UUID: testUUID},
-		mockMultiTag: mockMultiTag{Tag_Prefix: `mimecast`},
-		mockPolling:  mockPolling{Lookback: 24, Requests_Per_Minute: 60, Request_Interval: 30},
-		Client_Id:    `pub`, Client_Secret: `shh`,
+	embedded, err := MapRunnerDefinition(`mimecast`, `prod`, mockEmbeddedMimecast{
+		Ingester_UUID: testUUID,
+		Tag_Prefix:    `mimecast`,
+		Lookback:      24, Requests_Per_Minute: 60, Request_Interval: 30,
+		Client_Id: `pub`, Client_Secret: `shh`,
 		Api:  []mockApi{mockAudit, mockDelivery},
 		Host: `api.mimecast.com`, Preprocessor: []string{`pp1`, `pp2`},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	flat, err := MapConfig(`mimecast`, `prod`, mockMimecast{
+	flat, err := MapRunnerDefinition(`mimecast`, `prod`, mockMimecast{
 		Ingester_UUID: testUUID, Tag_Prefix: `mimecast`,
 		Lookback: 24, Requests_Per_Minute: 60, Request_Interval: 30,
 		Client_Id: `pub`, Client_Secret: `shh`,
@@ -151,18 +151,18 @@ func TestEmbeddedMatchesFlat(t *testing.T) {
 // promotes the embedded members too, so the emitted flat keys must land in them.
 func TestEmbeddedRoundTrip(t *testing.T) {
 	in := mockEmbeddedJamf{
-		mockBase:      mockBase{Ingester_UUID: testUUID},
-		mockSingleTag: mockSingleTag{Tag_Name: `jamf`},
-		mockPolling:   mockPolling{Lookback: 1, Requests_Per_Minute: 60, Request_Interval: 600},
-		Host:          `https://yourserver.jamfcloud.com`,
-		Client_Id:     `api-client-id`, Client_Secret: `shh`,
+		Ingester_UUID: testUUID,
+		Tag_Name:      `jamf`,
+		Lookback:      1, Requests_Per_Minute: 60, Request_Interval: 600,
+		Host:      `https://yourserver.jamfcloud.com`,
+		Client_Id: `api-client-id`, Client_Secret: `shh`,
 		Page_Size: 100, Sections: []string{`GENERAL`, `DISK_ENCRYPTION`},
 		Insecure_Skip_TLS_Verify: true,
 	}
 	want := in
 	want.Client_Secret = `` // withheld by design
 
-	c, err := MapConfig(`jamf`, `prod`, in)
+	c, err := MapRunnerDefinition(`jamf`, `prod`, in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ type shadowAmbiguous struct {
 }
 
 func TestEmbeddedShadowing(t *testing.T) {
-	c, err := MapConfig(`shadow`, `prod`, shadowOuter{
+	c, err := MapRunnerDefinition(`shadow`, `prod`, shadowOuter{
 		mockSingleTag: mockSingleTag{Tag_Name: `inner`},
 		Tag_Name:      `outer`,
 		Host:          `h`,
@@ -250,12 +250,10 @@ func TestEmbeddedShadowing(t *testing.T) {
 }
 
 func TestEmbeddedShadowingNested(t *testing.T) {
-	c, err := MapConfig(`shadow`, `prod`, shadowNested{
-		shadowMiddle: shadowMiddle{
-			mockSingleTag: mockSingleTag{Tag_Name: `deep`},
-			Tag_Name:      `middle`,
-		},
-		Host: `h`,
+	c, err := MapRunnerDefinition(`shadow`, `prod`, shadowNested{
+		mockSingleTag: mockSingleTag{Tag_Name: `deep`},
+		Tag_Name:      `middle`,
+		Host:          `h`,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -269,7 +267,7 @@ func TestEmbeddedShadowingNested(t *testing.T) {
 }
 
 func TestEmbeddedAmbiguous(t *testing.T) {
-	_, err := MapConfig(`shadow`, `prod`, shadowAmbiguous{})
+	_, err := MapRunnerDefinition(`shadow`, `prod`, shadowAmbiguous{})
 	if err == nil {
 		t.Fatal(`two members promoted from the same depth should be reported`)
 	}
@@ -288,7 +286,7 @@ func TestEmbeddedPointer(t *testing.T) {
 		*mockPolling
 		Host string
 	}
-	c, err := MapConfig(`ptr`, `prod`, withPtr{Host: `h`})
+	c, err := MapRunnerDefinition(`ptr`, `prod`, withPtr{Host: `h`})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +300,7 @@ func TestEmbeddedPointer(t *testing.T) {
 		}
 	}
 	// and a populated one contributes values
-	c, err = MapConfig(`ptr`, `prod`, withPtr{mockPolling: &mockPolling{Lookback: 24}, Host: `h`})
+	c, err = MapRunnerDefinition(`ptr`, `prod`, withPtr{mockPolling: &mockPolling{Lookback: 24}, Host: `h`})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,11 +322,11 @@ func TestEmbeddedDeep(t *testing.T) {
 	type l0 struct{ l1 }
 	// ten levels of embedding is past maxStructDepth
 	type tooDeep struct{ l0 }
-	if _, err := MapConfig(`deep`, `prod`, tooDeep{}); err == nil {
+	if _, err := MapRunnerDefinition(`deep`, `prod`, tooDeep{}); err == nil {
 		t.Error(`excessive nesting should be reported`)
 	}
 	// but a shallow chain still flattens all the way down
-	c, err := MapConfig(`deep`, `prod`, l5{})
+	c, err := MapRunnerDefinition(`deep`, `prod`, l5{})
 	if err != nil {
 		t.Fatal(err)
 	}

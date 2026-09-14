@@ -39,7 +39,7 @@ var (
 	ErrUnrepresentable  = errors.New("value cannot be represented in a config file")
 	ErrAmbiguousMember  = errors.New("ambiguous promoted config member")
 
-	uuidType = reflect.TypeOf(uuid.UUID{})
+	uuidType = reflect.TypeFor[uuid.UUID]()
 )
 
 type ValueType string
@@ -56,11 +56,11 @@ const (
 	typeSliceStruct ValueType = `[]struct`
 )
 
-// Config represents a description of an ingester config or a populated and configured ingester.
-// This struct is used to translate a native Config type from a plugin into something that can be shipped over JSON
+// RunnerDefinition represents a description of an ingester config or a populated and configured ingester.
+// This struct is used to translate a native RunnerDefinition type from a plugin into something that can be shipped over JSON
 // to a GUI/Webserver and drawn in a human friendly way.  It can then be sent to the ingester to be validated and
 // translated back to an INI config blob.
-type Config struct {
+type RunnerDefinition struct {
 	Kind      string    // what configuration type this represents
 	Name      string    // config name (key in config map for a given Kind)
 	UUID      uuid.UUID `json:",omitzero"`
@@ -364,13 +364,13 @@ func (vt ValueType) Complex() bool {
 	return false
 }
 
-// MapConfig takes a native plugin config struct and maps it to the dynamic Config structure.
+// MapRunnerDefinition takes a native plugin config struct and maps it to the dynamic RunnerDefinition structure.
 // Embedded structs are flattened, because gcfg promotes them into the parent INI section.
 // Unexported members are skipped, they are derived at verify time and are not config.
 // A member tagged json:"-" is a secret; the variable is described but its value is never
 // populated.  Zero valued members are described without a value, so handing this a zero
 // struct yields an empty prototype and handing it a populated struct yields a populated config.
-func MapConfig(kind, name string, v any) (c Config, err error) {
+func MapRunnerDefinition(kind, name string, v any) (c RunnerDefinition, err error) {
 	if kind == `` {
 		err = errors.New("empty kind")
 		return
@@ -390,14 +390,14 @@ func MapConfig(kind, name string, v any) (c Config, err error) {
 	if vars, err = mapStruct(rv, 0); err != nil {
 		return
 	}
-	c = Config{Kind: kind, Name: name, Variables: make([]Variable, 0, len(vars))}
+	c = RunnerDefinition{Kind: kind, Name: name, Variables: make([]Variable, 0, len(vars))}
 	for _, vr := range vars {
 		if err = vr.Validate(); err != nil {
 			err = fmt.Errorf("%s produced an invalid variable: %w", vr.Name, err)
 			return
 		}
 		if vr.Name == ingesterUUIDName {
-			// INI writes this from Config.UUID, keep it out of the variable set
+			// INI writes this from RunnerDefinition.UUID, keep it out of the variable set
 			if s, ok := vr.Value.(string); ok {
 				if c.UUID, err = uuid.Parse(s); err != nil {
 					err = fmt.Errorf("Invalid Ingester-UUID %q %w", s, err)
@@ -628,7 +628,7 @@ func derefValue(v reflect.Value) reflect.Value {
 }
 
 // INI writes out a
-func (c Config) INI() (r string, err error) {
+func (c RunnerDefinition) INI() (r string, err error) {
 	// check the required stuff
 	if c.Kind == `` {
 		err = errors.New("empty kind")

@@ -19,7 +19,7 @@ import (
 // The mock configs below mirror the shape of the real hosted plugin configs, flattened so
 // that no embedded structs are involved yet.  Between them they cover every primitive we
 // support: string, int, uint, float, bool, uuid, []string and a named string type, along
-// with the json:"-" secrets and the Ingester-UUID that MapConfig lifts out.
+// with the json:"-" secrets and the Ingester-UUID that MapRunnerDefinition lifts out.
 
 // mockApi mirrors mimecast.Api, a named string type used as a slice member.
 type mockApi string
@@ -118,7 +118,7 @@ type mockWidest struct {
 }
 
 // varNames lists the emitted variable names in order, for the shape assertions.
-func varNames(c Config) []string {
+func varNames(c RunnerDefinition) []string {
 	out := make([]string, 0, len(c.Variables))
 	for _, v := range c.Variables {
 		out = append(out, v.Name)
@@ -126,7 +126,7 @@ func varNames(c Config) []string {
 	return out
 }
 
-func findVar(c Config, name string) (Variable, bool) {
+func findVar(c RunnerDefinition, name string) (Variable, bool) {
 	for _, v := range c.Variables {
 		if v.Name == name {
 			return v, true
@@ -135,10 +135,10 @@ func findVar(c Config, name string) (Variable, bool) {
 	return Variable{}, false
 }
 
-// TestMapConfigShape checks the variable list MapConfig produces for each mock config:
+// TestMapRunnerDefinitionShape checks the variable list MapRunnerDefinition produces for each mock config:
 // the names, the declared types, that unexported members are dropped, and that the
-// Ingester-UUID is lifted out into Config.UUID rather than left in the list.
-func TestMapConfigShape(t *testing.T) {
+// Ingester-UUID is lifted out into RunnerDefinition.UUID rather than left in the list.
+func TestMapRunnerDefinitionShape(t *testing.T) {
 	for _, tc := range []struct {
 		kind  string
 		v     any
@@ -188,7 +188,7 @@ func TestMapConfigShape(t *testing.T) {
 		},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
-			c, err := MapConfig(tc.kind, `prod`, tc.v)
+			c, err := MapRunnerDefinition(tc.kind, `prod`, tc.v)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -216,10 +216,10 @@ func TestMapConfigShape(t *testing.T) {
 	}
 }
 
-// TestMapConfigSecrets checks that a json:"-" member is still described so a GUI can ask
+// TestMapRunnerDefinitionSecrets checks that a json:"-" member is still described so a GUI can ask
 // for it, but never carries the value.
-func TestMapConfigSecrets(t *testing.T) {
-	c, err := MapConfig(`okta`, `prod`, mockOkta{
+func TestMapRunnerDefinitionSecrets(t *testing.T) {
+	c, err := MapRunnerDefinition(`okta`, `prod`, mockOkta{
 		Domain: `example.okta.com`,
 		Token:  `SUPER-SECRET-DO-NOT-LEAK`,
 	})
@@ -249,15 +249,15 @@ func TestMapConfigSecrets(t *testing.T) {
 	}
 }
 
-// TestMapConfigUUIDLift checks that Ingester-UUID lands in Config.UUID, stays out of the
+// TestMapRunnerDefinitionUUIDLift checks that Ingester-UUID lands in RunnerDefinition.UUID, stays out of the
 // variable list, and is written exactly once by INI.
-func TestMapConfigUUIDLift(t *testing.T) {
-	c, err := MapConfig(`okta`, `prod`, mockOkta{Ingester_UUID: testUUID, Domain: `x`})
+func TestMapRunnerDefinitionUUIDLift(t *testing.T) {
+	c, err := MapRunnerDefinition(`okta`, `prod`, mockOkta{Ingester_UUID: testUUID, Domain: `x`})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.UUID.String() != testUUID {
-		t.Errorf(`Config.UUID = %v, want %s`, c.UUID, testUUID)
+		t.Errorf(`RunnerDefinition.UUID = %v, want %s`, c.UUID, testUUID)
 	}
 	if _, ok := findVar(c, ingesterUUIDName); ok {
 		t.Error(`Ingester-UUID is still in the variable list, INI would emit it twice`)
@@ -270,13 +270,13 @@ func TestMapConfigUUIDLift(t *testing.T) {
 		t.Errorf("Ingester-UUID appears %d times:\n%s", n, ini)
 	}
 	// a malformed uuid must be reported rather than quietly dropped
-	if _, err = MapConfig(`okta`, `prod`, mockOkta{Ingester_UUID: `nope`}); err == nil {
+	if _, err = MapRunnerDefinition(`okta`, `prod`, mockOkta{Ingester_UUID: `nope`}); err == nil {
 		t.Error(`a malformed Ingester-UUID should be an error`)
 	}
 }
 
-// TestMapConfigErrors covers the argument checks.
-func TestMapConfigErrors(t *testing.T) {
+// TestMapRunnerDefinitionErrors covers the argument checks.
+func TestMapRunnerDefinitionErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		kind, cnfg string
@@ -285,23 +285,23 @@ func TestMapConfigErrors(t *testing.T) {
 		{`empty kind`, ``, `prod`, mockOkta{}},
 		{`empty name`, `okta`, ``, mockOkta{}},
 	} {
-		if _, err := MapConfig(tc.kind, tc.cnfg, tc.v); err == nil {
+		if _, err := MapRunnerDefinition(tc.kind, tc.cnfg, tc.v); err == nil {
 			t.Errorf(`%s: expected an error`, tc.name)
 		}
 	}
 	for _, v := range []any{nil, 42, `a string`, []int{1}} {
-		if _, err := MapConfig(`k`, `n`, v); err == nil {
+		if _, err := MapRunnerDefinition(`k`, `n`, v); err == nil {
 			t.Errorf(`%T should not be mappable`, v)
 		}
 	}
 	// an unsupported member type must be reported
-	if _, err := MapConfig(`k`, `n`, struct{ Bad map[string]string }{}); err == nil {
+	if _, err := MapRunnerDefinition(`k`, `n`, struct{ Bad map[string]string }{}); err == nil {
 		t.Error(`a map member should be unsupported`)
 	}
 }
 
 // TestConfigINIRoundTrip is the end to end check: a populated native config goes through
-// MapConfig, out through INI, back in through the real gcfg parser, and must land in a
+// MapRunnerDefinition, out through INI, back in through the real gcfg parser, and must land in a
 // struct identical to the original apart from the secrets we deliberately withhold.
 func TestConfigINIRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
@@ -379,9 +379,9 @@ func TestConfigINIRoundTrip(t *testing.T) {
 		},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
-			c, err := MapConfig(tc.kind, `prod`, tc.in)
+			c, err := MapRunnerDefinition(tc.kind, `prod`, tc.in)
 			if err != nil {
-				t.Fatalf(`MapConfig: %v`, err)
+				t.Fatalf(`MapRunnerDefinition: %v`, err)
 			}
 			ini, err := c.INI()
 			if err != nil {
@@ -416,9 +416,9 @@ type mockPointers struct {
 	Renamed string `gcfg:"custom-name"`
 }
 
-func TestMapConfigPointersAndTags(t *testing.T) {
+func TestMapRunnerDefinitionPointersAndTags(t *testing.T) {
 	name, count, enabled := `pointed at`, 7, true
-	c, err := MapConfig(`ptr`, `prod`, &mockPointers{
+	c, err := MapRunnerDefinition(`ptr`, `prod`, &mockPointers{
 		Name: &name, Count: &count, Enabled: &enabled, Renamed: `x`,
 	})
 	if err != nil {
@@ -473,14 +473,14 @@ func TestMapConfigPointersAndTags(t *testing.T) {
 
 // TestINIErrors covers the guards on INI itself.
 func TestINIErrors(t *testing.T) {
-	for _, c := range []Config{{Name: `prod`}, {Kind: `okta`}} {
+	for _, c := range []RunnerDefinition{{Name: `prod`}, {Kind: `okta`}} {
 		if _, err := c.INI(); err == nil {
 			t.Errorf(`%+v should not produce an INI`, c)
 		}
 	}
 	// a variable that cannot be represented must fail the whole config rather than
 	// silently emitting a broken file
-	c := Config{Kind: `k`, Name: `n`, Variables: []Variable{
+	c := RunnerDefinition{Kind: `k`, Name: `n`, Variables: []Variable{
 		{Name: `Bad`, Type: typeString, Value: "a`b\x01c"},
 	}}
 	if _, err := c.INI(); err == nil {

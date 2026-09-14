@@ -166,7 +166,7 @@ func TestExampleConfigParity(t *testing.T) {
 				t.Fatalf(`%s has no %s section`, tc.example, tc.kind)
 			}
 
-			c, err := dynamic.MapConfig(tc.kind, name, cfg)
+			c, err := dynamic.MapRunnerDefinition(tc.kind, name, cfg)
 			if err != nil {
 				t.Fatalf(`MapConfig: %v`, err)
 			}
@@ -207,7 +207,7 @@ func TestExampleConfigVerifies(t *testing.T) {
 			if !ok {
 				t.Fatalf(`no %s section`, tc.kind)
 			}
-			c, err := dynamic.MapConfig(tc.kind, name, cfg)
+			c, err := dynamic.MapRunnerDefinition(tc.kind, name, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -259,7 +259,7 @@ func TestPluginConfigsFlatten(t *testing.T) {
 		{`Tester`, tester.Config{}, []string{`Tag-Name`}},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
-			c, err := dynamic.MapConfig(tc.kind, `x`, tc.cfg)
+			c, err := dynamic.MapRunnerDefinition(tc.kind, `x`, tc.cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -294,7 +294,7 @@ func TestBaseConfigsFlatten(t *testing.T) {
 		hosted.PollingConfig
 		Host string
 	}
-	c, err := dynamic.MapConfig(`x`, `y`, withAll{})
+	c, err := dynamic.MapRunnerDefinition(`x`, `y`, withAll{})
 	if err != nil {
 		t.Fatal(err)
 	}
