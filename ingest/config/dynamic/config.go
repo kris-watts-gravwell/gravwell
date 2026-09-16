@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 const (
@@ -32,9 +33,36 @@ type Config struct {
 	Auth_Token string   //REQUIRED authentication token for webservers
 	Storage    string   //REQUIRED storage location for configs
 	Class      string   //OPTIONAL free form string to categorize an ingester for pulling configs
+
+	//OPTIONAL how often to ask the webserver for configuration, as a duration string
+	//e.g. "30s" or "5m".  Empty takes the default.  A webserver that pushes a change
+	//reaches us sooner, this is the floor rather than the only path.
+	Poll_Interval string
 }
 
-func (c *Config) Validate() (err error) {
+// DefaultPollInterval is how often a connected ingester asks for its configuration when
+// Poll_Interval is not set.
+const DefaultPollInterval = 30 * time.Second
+
+// MinPollInterval is the floor.  Polling faster than this is a mistake that turns a fleet
+// of ingesters into load on the webserver, so it is clamped rather than honored.
+const MinPollInterval = time.Second
+
+// PollInterval is the configured interval, or the default.  Verify has already checked
+// that it parses, so an unparseable value here can only mean Verify was not called and
+// the default is the safe answer.
+func (c Config) PollInterval() time.Duration {
+	if c.Poll_Interval == `` {
+		return DefaultPollInterval
+	}
+	d, err := time.ParseDuration(c.Poll_Interval)
+	if err != nil || d < MinPollInterval {
+		return DefaultPollInterval
+	}
+	return d
+}
+
+func (c *Config) Verify() (err error) {
 	if c == nil {
 		return errors.New("nil config")
 	}
@@ -74,6 +102,16 @@ func (c *Config) Validate() (err error) {
 			return fmt.Errorf("invalid webserver endpoint %q unsupported scheme %q", orig, uri.Scheme)
 		}
 		c.Webserver[i] = uri.String()
+	}
+
+	// the poll interval is optional, but if it is set it has to make sense
+	if c.Poll_Interval != `` {
+		d, perr := time.ParseDuration(c.Poll_Interval)
+		if perr != nil {
+			return fmt.Errorf("invalid Poll-Interval %q %w", c.Poll_Interval, perr)
+		} else if d < MinPollInterval {
+			return fmt.Errorf("invalid Poll-Interval %v, the minimum is %v", d, MinPollInterval)
+		}
 	}
 
 	// check that storage points to a writable directory

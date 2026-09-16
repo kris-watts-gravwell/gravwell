@@ -1,0 +1,208 @@
+{{define "page"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gravwell dynamic config test server</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/hx.js" defer></script>
+</head>
+<body>
+<header>
+	<h1>Gravwell dynamic config test server</h1>
+	<span class="sp"></span>
+	<span class="statuswrap">
+		<span id="status" hx-get="/ui/status" hx-trigger="load, every 3s"></span>
+		<div id="ingesters" class="dropdown" hidden></div>
+	</span>
+</header>
+<main>
+	<div>
+		<section class="panel">
+			<h2>Available runner kinds</h2>
+			<div class="body" id="kinds" hx-get="/ui/kinds" hx-trigger="load, every 5s"></div>
+		</section>
+		<section class="panel">
+			<h2>Configured runners</h2>
+			<div class="body" id="runners" hx-get="/ui/runners" hx-trigger="load, every 5s"></div>
+		</section>
+	</div>
+	<section class="panel">
+		<h2>Detail</h2>
+		<div id="detail">
+			<p class="empty">Pick a kind to configure a new runner, or a runner to edit it.</p>
+		</div>
+	</section>
+</main>
+</body>
+</html>{{end}}
+
+{{define "kinds"}}
+{{- if not . -}}
+<p class="empty">No ingester has registered a kind yet.</p>
+{{- else -}}
+{{- range . }}
+<button class="row" hx-get="/ui/new?kind={{.Kind}}" hx-target="#detail">
+	<span class="nm">{{.Kind}}</span>
+	<span class="sub">{{len .Variables}} setting{{if ne (len .Variables) 1}}s{{end}}{{if .Singleton}} &middot; singleton{{end}}</span>
+</button>
+{{- end }}
+{{- end }}
+{{end}}
+
+{{define "runners"}}
+{{- if not . -}}
+<p class="empty">Nothing configured yet.</p>
+{{- else -}}
+{{- range . }}
+<button class="row" hx-get="/ui/edit?uuid={{.UUID}}" hx-target="#detail">
+	<span class="nm">{{.Name}}</span>
+	<span class="sub">{{.Kind}} &middot; {{.UUID}}</span>
+</button>
+{{- end }}
+{{- end }}
+{{end}}
+
+{{define "status"}}
+{{- /* the chip is a button so it is reachable by keyboard, not just by mouse */ -}}
+<button class="chip {{if .Connected}}on{{else}}off{{end}}" data-toggle="#ingesters"
+	hx-get="/ui/ingesters" hx-target="#ingesters" title="Show every ingester the server knows about">
+	{{- if .Connected }}{{.Connected}} ingester{{if ne .Connected 1}}s{{end}} connected
+	{{- else }}no ingesters connected{{ end -}}
+</button>
+{{end}}
+
+{{define "ingesters"}}
+{{- if not . -}}
+<p class="empty">No ingester has ever registered with this server.</p>
+{{- else -}}
+<table class="ing">
+	<thead><tr><th></th><th>UUID</th><th>Class</th><th>Kinds</th><th>Last seen</th></tr></thead>
+	<tbody>
+	{{- range . }}
+	<tr>
+		<td><span class="dot {{if .Connected}}on{{else}}off{{end}}"
+			title="{{if .Connected}}connected{{else}}not connected{{end}}"></span></td>
+		<td class="mono">{{.UUID}}</td>
+		<td>{{if .Class}}<span class="chip">{{.Class}}</span>{{else}}<span class="muted">none</span>{{end}}</td>
+		<td class="muted">{{if .Kinds}}{{.Kinds}}{{else}}none{{end}}</td>
+		<td class="muted">{{.LastSeen}}</td>
+	</tr>
+	{{- end }}
+	</tbody>
+</table>
+{{- end }}
+{{end}}
+
+{{define "form"}}
+{{- with .Note }}<div class="note {{.Class}}">{{.Text}}</div>{{ end }}
+<form hx-post="/ui/save" hx-target="#detail">
+	<input type="hidden" name="kind" value="{{.Kind}}">
+	<input type="hidden" name="uuid" value="{{.UUID}}">
+	<fieldset>
+		<label>
+			<span class="lbl">Name <span class="req">*</span></span>
+			<span class="hint">The config name, unique within {{.Kind}}.</span>
+			<input type="text" name="name" value="{{.Name}}" required>
+		</label>
+		<div class="assign">
+			<span class="lbl">Assignment</span>
+			<span class="hint">Leave both empty to send this configuration to every ingester that can
+				run {{.Kind}}. Each list that has anything selected becomes a filter, and an
+				ingester has to satisfy every filter to receive the configuration.</span>
+			<div class="two">
+				<label>
+					<span class="lbl">Ingesters</span>
+					<span class="hint">Only those that have registered {{.Kind}} are listed.</span>
+					{{- if .Targets }}
+					<select name="assign.uuid" multiple size="5">
+						{{- range .Targets }}
+						<option value="{{.UUID}}"{{if .Selected}} selected{{end}}>
+							{{.UUID}}{{if .Class}} &middot; {{.Class}}{{end}}{{if not .Known}} (has not registered this kind){{end}}
+						</option>
+						{{- end }}
+					</select>
+					{{- else }}
+					<span class="empty">No ingester has registered {{.Kind}} yet.</span>
+					{{- end }}
+				</label>
+				<label>
+					<span class="lbl">Classes</span>
+					<span class="hint">Classes seen from connected ingesters.</span>
+					{{- if .Classes }}
+					<select name="assign.class" multiple size="5">
+						{{- range .Classes }}
+						<option value="{{.Name}}"{{if .Selected}} selected{{end}}>{{.Name}}</option>
+						{{- end }}
+					</select>
+					{{- else }}
+					<span class="empty">No ingester has reported a class yet.</span>
+					{{- end }}
+					<span class="hint">Other classes, comma separated.</span>
+					<input type="text" name="assign.otherclasses" value="{{.OtherClasses}}"
+						placeholder="a class no ingester is carrying yet">
+				</label>
+			</div>
+		</div>
+		{{- range .Fields }}
+		<label>
+			<span class="lbl">{{.Name}}{{if .Required}} <span class="req">*</span>{{end}} <span class="ty">{{.Type}}</span></span>
+			{{- if .Description }}<span class="hint">{{.Description}}</span>{{ end }}
+			{{- if eq .Control "secret" }}
+			{{- /* a required secret that is already set must not be marked required, the
+			       form never shows it and an empty box means "keep what is stored" */ -}}
+			<span class="secretwrap">
+				<input type="password" name="var.{{.Name}}" autocomplete="new-password"
+					{{if and .Required (not .HasValue)}}required {{end}}
+					placeholder="{{if .HasValue}}leave blank to keep the stored value{{else}}enter a value{{end}}">
+				<span class="secretstate{{if .HasValue}} set{{end}}"
+					title="whether a value is stored on the server">{{if .HasValue}}stored{{else}}none stored{{end}}</span>
+			</span>
+			{{- else if eq .Control "bool" }}
+			{{- /* never marked required, a required checkbox would mean "must be true" */ -}}
+			<input type="checkbox" name="var.{{.Name}}" value="true"{{if .Checked}} checked{{end}}>
+			{{- else if eq .Control "number" }}
+			<input type="number" step="any" name="var.{{.Name}}" value="{{.Value}}"{{if .Required}} required{{end}}>
+			{{- else if eq .Control "list" }}
+			{{- template "listcontrol" . }}
+			{{- else if eq .Control "json" }}
+			<span class="hint">Encoded as JSON, this type has no flat form control.</span>
+			<textarea name="var.{{.Name}}"{{if .Required}} required{{end}}>{{.Value}}</textarea>
+			{{- else }}
+			<input type="text" name="var.{{.Name}}" value="{{.Value}}"{{if .Required}} required{{end}}>
+			{{- end }}
+		</label>
+		{{- end }}
+	</fieldset>
+	<div class="actions">
+		<button class="go" type="submit">{{if .Existing}}Save changes{{else}}Create runner{{end}}</button>
+		{{- if .Existing }}
+		<button class="danger" type="button" hx-post="/ui/delete?uuid={{.UUID}}" hx-target="#detail"
+			hx-confirm="Delete {{.Name}}?">Delete</button>
+		{{- end }}
+	</div>
+</form>
+{{end}}
+
+{{define "note"}}<div class="note {{.Class}}">{{.Text}}</div>{{end}}
+
+{{define "listcontrol"}}
+{{- if .Required }}<span class="hint">At least one entry is required.</span>{{ end }}
+<div class="list" id="list-{{.Name}}">
+	{{- range .Values }}
+	<div class="listrow">
+		<input type="text" name="var.{{$.Name}}" value="{{.}}">
+		<button type="button" class="mini" data-remove=".listrow" title="Remove this entry">&minus;</button>
+	</div>
+	{{- end }}
+</div>
+<button type="button" class="mini add" title="Add another entry"
+	hx-get="/ui/listrow?name={{.Name}}" hx-target="#list-{{.Name}}" hx-swap="beforeend">&plus; add</button>
+{{end}}
+
+{{define "listrow"}}
+<div class="listrow">
+	<input type="text" name="var.{{.}}" value="">
+	<button type="button" class="mini" data-remove=".listrow" title="Remove this entry">&minus;</button>
+</div>
+{{end}}

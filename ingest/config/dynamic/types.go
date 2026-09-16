@@ -26,6 +26,25 @@ const (
 	// maxStructDepth guards against a config type that manages to reference itself.
 	maxStructDepth = 8
 
+	// dynamicTag is the struct tag this package reads for per member options:
+	//
+	//	Token string `dynamic:"secret"`
+	//
+	// It is separate from the gcfg and json tags because it describes how a member should
+	// be presented and handled by the dynamic configuration system, not how it is parsed
+	// or serialized.
+	dynamicTag = `dynamic`
+
+	// optSecret marks a member as a secret: a string whose value must never be shipped
+	// and which a GUI should mask rather than display.
+	optSecret = `secret`
+
+	// optRequired marks a member that has to be populated for the configuration to be
+	// usable.  It describes the configuration to whoever is filling it in, it is not a
+	// substitute for the plugin's own Verify: a config can arrive from somewhere other
+	// than a form.
+	optRequired = `required`
+
 	// iniRawUnsafe is the set of runes the gcfg raw string scanner treats specially:
 	// a backtick, a backslash and a double quote.  A value holding none of them is
 	// copied through a backtick string verbatim.
@@ -50,6 +69,7 @@ const (
 	typeUint        ValueType = `uint`
 	typeFloat       ValueType = `float`
 	typeString      ValueType = `string`
+	typeSecret      ValueType = `secret` // identical to a string, but we tell everyone we want to hide it
 	typeUUID        ValueType = `uuid`
 	typeSliceString ValueType = `[]string`
 	typeStruct      ValueType = `struct`
@@ -79,12 +99,50 @@ type Variable struct {
 	Required    bool
 }
 
-// Assignment is an optional assignment map that allows for pinning specific configurations to specific
-// hosted ingesters or classes of hosted ingesters
+// Assignment narrows which ingesters a configuration is meant for.  An empty Assignment,
+// or a nil one, means the configuration goes to anything able to run its kind.
+//
+// The two lists are independent filters and both have to pass.  A configuration listing
+// UUIDs goes only to those ingesters, one listing Classes goes only to ingesters in one
+// of those classes, and one listing both goes only to an ingester that satisfies each.
+// An empty list is not a filter, so listing classes alone does not restrict by UUID.
 type Assignment struct {
-	UUID  uuid.UUID `json:",omitzero"`  // used to assign to a specific ingester instance
-	Class string    `json:",omitempty"` // used to assign to a class of ingesters (hosted, http, etc...)
-	Group string    `json:",omitempty"` // used to assign to a free form group (user configured)
+	UUIDs   []uuid.UUID `json:",omitempty"` // specific ingester instances
+	Classes []string    `json:",omitempty"` // classes of ingesters (hosted, http, etc...)
+	Group   string      `json:",omitempty"` // a free form group (user configured)
+}
+
+// Empty reports whether this assignment narrows anything at all.
+func (a *Assignment) Empty() bool {
+	return a == nil || (len(a.UUIDs) == 0 && len(a.Classes) == 0 && a.Group == ``)
+}
+
+// AllowsUUID reports whether an ingester's UUID passes the UUID filter.  An assignment
+// that lists no UUIDs does not filter on them.
+func (a *Assignment) AllowsUUID(id uuid.UUID) bool {
+	if a == nil || len(a.UUIDs) == 0 {
+		return true
+	}
+	for _, cur := range a.UUIDs {
+		if cur == id {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsClass reports whether an ingester's class passes the class filter.  An assignment
+// that lists no classes does not filter on them.
+func (a *Assignment) AllowsClass(class string) bool {
+	if a == nil || len(a.Classes) == 0 {
+		return true
+	}
+	for _, cur := range a.Classes {
+		if cur == class {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate checks a variable to make sure it is appropriately populated and that if there is a Value its type
@@ -128,6 +186,7 @@ func (v Variable) Validate() error {
 	case string:
 		switch v.Type {
 		case typeString:
+		case typeSecret:
 		case typeUUID:
 			if _, err := uuid.Parse(val); err != nil {
 				return fmt.Errorf("Value %q is not a valid uuid: %w", val, err)
@@ -257,6 +316,8 @@ func (v Variable) emitIniLine(w io.Writer, prefix string) (err error) {
 		// %v uses the shortest representation that parses back exactly, %f would
 		// silently truncate the value to six decimal places
 		fmt.Fprintf(w, "%s%s=%v\n", prefix, v.Name, v.Value)
+	case typeSecret:
+		fallthrough // identical to a string
 	case typeString:
 		var q string
 		if q, err = v.quote(fmt.Sprintf("%s", v.Value)); err != nil {
@@ -337,6 +398,7 @@ func (vt ValueType) Valid() (err error) {
 	case typeUint:
 	case typeFloat:
 	case typeString:
+	case typeSecret:
 	case typeUUID:
 	case typeSliceString:
 	case typeStruct:
@@ -356,6 +418,7 @@ func (vt ValueType) Complex() bool {
 	case typeUint:
 	case typeFloat:
 	case typeString:
+	case typeSecret:
 	case typeUUID:
 	case typeSliceString:
 	default:
@@ -367,8 +430,11 @@ func (vt ValueType) Complex() bool {
 // MapRunnerDefinition takes a native plugin config struct and maps it to the dynamic RunnerDefinition structure.
 // Embedded structs are flattened, because gcfg promotes them into the parent INI section.
 // Unexported members are skipped, they are derived at verify time and are not config.
-// A member tagged json:"-" is a secret; the variable is described but its value is never
-// populated.  Zero valued members are described without a value, so handing this a zero
+// A member tagged dynamic:"secret" is described as a secret rather than a string, and a
+// member tagged either dynamic:"secret" or json:"-" has its value withheld: the variable
+// is described so a GUI can ask for it, but the current value is never populated.
+// A member tagged dynamic:"required" is marked Required so a form can insist on it.  The
+// options combine, dynamic:"secret,required" is a credential that has to be supplied.  Zero valued members are described without a value, so handing this a zero
 // struct yields an empty prototype and handing it a populated struct yields a populated config.
 func MapRunnerDefinition(kind, name string, v any) (c RunnerDefinition, err error) {
 	if kind == `` {
@@ -509,8 +575,26 @@ func mapField(f reflect.StructField, fv reflect.Value, depth int) (v Variable, e
 		err = fmt.Errorf("%s: %w", v.Name, err)
 		return
 	}
-	if f.Tag.Get(`json`) == `-` {
-		return // a secret, describe it so a GUI can ask for it but never ship the current value
+	// a member tagged dynamic:"required" has to be filled in, which lets a form say so
+	// up front rather than letting someone save a configuration the ingester will refuse
+	v.Required = hasDynamicOption(f, optRequired)
+
+	// a member tagged dynamic:"secret" is a string that a GUI should mask.  It is typed
+	// as a secret rather than a string so that every consumer knows, rather than each one
+	// having to guess from the member's name.
+	secret := hasDynamicOption(f, optSecret)
+	if secret {
+		if v.Type != typeString {
+			err = fmt.Errorf("%s: %w, a secret must be a string, got %s", v.Name, ErrUnsupportedType, ft)
+			return
+		}
+		v.Type = typeSecret
+	}
+	// a secret's value never leaves the ingester, and neither does a json:"-" member's.
+	// Both are described so a GUI can ask for them, but the current value is withheld:
+	// shipping a live credential to a browser to render is how they escape.
+	if secret || f.Tag.Get(`json`) == `-` {
+		return
 	}
 	if fv = derefValue(fv); !fv.IsValid() || fv.IsZero() {
 		return // unset, leave Value nil
@@ -519,6 +603,21 @@ func mapField(f reflect.StructField, fv reflect.Value, depth int) (v Variable, e
 		err = fmt.Errorf("%s: %w", v.Name, err)
 	}
 	return
+}
+
+// hasDynamicOption reports whether a member carries an option in its dynamic tag.
+//
+// The tag value is a comma separated list so that further options can be added without
+// invalidating the ones already written into plugin configs.  Note the spelling: Go
+// struct tags are `dynamic:"secret"`, a space after the colon stops the conventional tag
+// parser from finding the key at all.
+func hasDynamicOption(f reflect.StructField, opt string) bool {
+	for _, cur := range strings.Split(f.Tag.Get(dynamicTag), `,`) {
+		if strings.TrimSpace(cur) == opt {
+			return true
+		}
+	}
+	return false
 }
 
 // iniName returns the name gcfg would match this member against, honoring a gcfg ident
@@ -577,7 +676,7 @@ func fieldValue(vt ValueType, fv reflect.Value, depth int) (val any, err error) 
 		val = fv.Uint()
 	case typeFloat:
 		val = fv.Float()
-	case typeString:
+	case typeString, typeSecret:
 		val = fv.String()
 	case typeUUID:
 		val = fv.Interface().(uuid.UUID).String()

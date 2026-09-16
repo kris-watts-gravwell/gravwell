@@ -26,9 +26,9 @@ func testConfig(t *testing.T) Config {
 	}
 }
 
-// TestConfigValidateRequired covers the guards on the required members.  Class is
+// TestConfigVerifyRequired covers the guards on the required members.  Class is
 // optional, so a config that omits it must still validate.
-func TestConfigValidateRequired(t *testing.T) {
+func TestConfigVerifyRequired(t *testing.T) {
 	dir := t.TempDir()
 	for _, tc := range []struct {
 		name string
@@ -39,38 +39,38 @@ func TestConfigValidateRequired(t *testing.T) {
 		{`no auth token`, Config{Webserver: []string{`10.0.0.1`}, Storage: dir}},
 		{`no storage`, Config{Webserver: []string{`10.0.0.1`}, Auth_Token: `t`}},
 	} {
-		if err := tc.c.Validate(); err == nil {
+		if err := tc.c.Verify(); err == nil {
 			t.Errorf("%s: expected an error", tc.name)
 		}
 	}
 	c := Config{}
 	if c.Enabled() {
 		t.Fatal("failed to catch empty struct as not enabled")
-	} else if err := c.Validate(); err != nil {
-		t.Fatal("Validate on empty Config failed", err)
+	} else if err := c.Verify(); err != nil {
+		t.Fatal("Verify on empty Config failed", err)
 	}
 
 	// a nil config is a programming error, not a panic
 	var nilc *Config
-	if err := nilc.Validate(); err == nil {
+	if err := nilc.Verify(); err == nil {
 		t.Error(`a nil config should not validate`)
 	}
 
 	// Class is optional
 	c = testConfig(t)
-	if err := c.Validate(); err != nil {
+	if err := c.Verify(); err != nil {
 		t.Errorf("a config with no Class should validate: %v", err)
 	}
 	c = testConfig(t)
 	c.Class = `edge`
-	if err := c.Validate(); err != nil {
+	if err := c.Verify(); err != nil {
 		t.Errorf("a config with a Class should validate: %v", err)
 	}
 }
 
-// TestConfigValidateWebserverNormalize checks that endpoints are parsed as URLs and that
+// TestConfigVerifyWebserverNormalize checks that endpoints are parsed as URLs and that
 // an endpoint with no protocol gets http:// attached.
-func TestConfigValidateWebserverNormalize(t *testing.T) {
+func TestConfigVerifyWebserverNormalize(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		in   string
@@ -91,7 +91,7 @@ func TestConfigValidateWebserverNormalize(t *testing.T) {
 	} {
 		c := testConfig(t)
 		c.Webserver = []string{tc.in}
-		if err := c.Validate(); err != nil {
+		if err := c.Verify(); err != nil {
 			t.Errorf("%s: %q should validate: %v", tc.name, tc.in, err)
 		} else if c.Webserver[0] != tc.want {
 			t.Errorf("%s: %q normalized to %q, want %q", tc.name, tc.in, c.Webserver[0], tc.want)
@@ -102,22 +102,22 @@ func TestConfigValidateWebserverNormalize(t *testing.T) {
 	c := testConfig(t)
 	c.Webserver = []string{`10.0.0.1:8080`, `https://foo.example.com`, ` localhost `}
 	want := []string{`http://10.0.0.1:8080`, `https://foo.example.com`, `http://localhost`}
-	if err := c.Validate(); err != nil {
+	if err := c.Verify(); err != nil {
 		t.Fatal(err)
 	} else if !reflect.DeepEqual(c.Webserver, want) {
 		t.Errorf("normalized to %v, want %v", c.Webserver, want)
 	}
 
 	// normalization is stable, validating an already validated config changes nothing
-	if err := c.Validate(); err != nil {
+	if err := c.Verify(); err != nil {
 		t.Fatal(err)
 	} else if !reflect.DeepEqual(c.Webserver, want) {
 		t.Errorf("revalidation changed the endpoints to %v, want %v", c.Webserver, want)
 	}
 }
 
-// TestConfigValidateWebserverErrors covers endpoints that cannot be used.
-func TestConfigValidateWebserverErrors(t *testing.T) {
+// TestConfigVerifyWebserverErrors covers endpoints that cannot be used.
+func TestConfigVerifyWebserverErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		ws   []string
@@ -136,18 +136,18 @@ func TestConfigValidateWebserverErrors(t *testing.T) {
 	} {
 		c := testConfig(t)
 		c.Webserver = tc.ws
-		if err := c.Validate(); err == nil {
+		if err := c.Verify(); err == nil {
 			t.Errorf("%s: %v should not validate", tc.name, tc.ws)
 		}
 	}
 }
 
-// TestConfigValidateStorageCreate checks that a missing Storage directory is created,
+// TestConfigVerifyStorageCreate checks that a missing Storage directory is created,
 // including any missing parents.
-func TestConfigValidateStorageCreate(t *testing.T) {
+func TestConfigVerifyStorageCreate(t *testing.T) {
 	c := testConfig(t)
 	c.Storage = filepath.Join(c.Storage, `parent`, `storage`)
-	if err := c.Validate(); err != nil {
+	if err := c.Verify(); err != nil {
 		t.Fatalf("Storage should have been created: %v", err)
 	}
 	if fi, err := os.Stat(c.Storage); err != nil {
@@ -157,13 +157,13 @@ func TestConfigValidateStorageCreate(t *testing.T) {
 	}
 
 	// an existing directory is accepted as is
-	if err := c.Validate(); err != nil {
+	if err := c.Verify(); err != nil {
 		t.Errorf("an existing Storage directory should validate: %v", err)
 	}
 }
 
-// TestConfigValidateStorageErrors covers Storage paths we cannot use.
-func TestConfigValidateStorageErrors(t *testing.T) {
+// TestConfigVerifyStorageErrors covers Storage paths we cannot use.
+func TestConfigVerifyStorageErrors(t *testing.T) {
 	dir := t.TempDir()
 	fpath := filepath.Join(dir, `file`)
 	if err := os.WriteFile(fpath, []byte(`data`), 0660); err != nil {
@@ -173,7 +173,7 @@ func TestConfigValidateStorageErrors(t *testing.T) {
 	// Storage is a regular file rather than a directory
 	c := testConfig(t)
 	c.Storage = fpath
-	if err := c.Validate(); err == nil {
+	if err := c.Verify(); err == nil {
 		t.Error(`a file should not be accepted as Storage`)
 	}
 
@@ -181,7 +181,7 @@ func TestConfigValidateStorageErrors(t *testing.T) {
 	// other than a not exist error and we must not try to create it
 	c = testConfig(t)
 	c.Storage = filepath.Join(fpath, `storage`)
-	if err := c.Validate(); err == nil {
+	if err := c.Verify(); err == nil {
 		t.Error(`a Storage path below a file should not validate`)
 	}
 
@@ -193,9 +193,9 @@ func TestConfigValidateStorageErrors(t *testing.T) {
 	}
 }
 
-// TestConfigValidateStorageNotWritable checks that a directory we cannot create files in
+// TestConfigVerifyStorageNotWritable checks that a directory we cannot create files in
 // is rejected, permission bits alone are not enough to know that.
-func TestConfigValidateStorageNotWritable(t *testing.T) {
+func TestConfigVerifyStorageNotWritable(t *testing.T) {
 	if runtime.GOOS == `windows` {
 		t.Skip(`mode bits do not gate writes on windows`)
 	} else if os.Geteuid() == 0 {
@@ -207,24 +207,24 @@ func TestConfigValidateStorageNotWritable(t *testing.T) {
 	}
 	c := testConfig(t)
 	c.Storage = dir
-	if err := c.Validate(); err == nil {
+	if err := c.Verify(); err == nil {
 		t.Error(`a read only Storage directory should not validate`)
 	}
 
 	// a missing Storage below a directory we cannot write to cannot be created
 	c = testConfig(t)
 	c.Storage = filepath.Join(dir, `storage`)
-	if err := c.Validate(); err == nil {
+	if err := c.Verify(); err == nil {
 		t.Error(`a Storage directory that cannot be created should not validate`)
 	}
 }
 
-// TestConfigValidateStorageClean makes sure the writability probe does not leave
+// TestConfigVerifyStorageClean makes sure the writability probe does not leave
 // anything behind in the storage directory.
-func TestConfigValidateStorageClean(t *testing.T) {
+func TestConfigVerifyStorageClean(t *testing.T) {
 	c := testConfig(t)
 	for range 4 {
-		if err := c.Validate(); err != nil {
+		if err := c.Verify(); err != nil {
 			t.Fatal(err)
 		}
 	}

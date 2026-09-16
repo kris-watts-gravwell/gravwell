@@ -28,8 +28,8 @@ type Config struct {
 	hosted.BaseConfig
 	hosted.MultiTagConfig
 	hosted.PollingConfig
-	Client_Id     string `json:"-"` // DO NOT send this when marshalling
-	Client_Secret string `json:"-"` // DO NOT send this when marshalling
+	Client_Id     string `json:"-" dynamic:"secret,required"` // DO NOT send this when marshalling
+	Client_Secret string `json:"-" dynamic:"secret,required"` // DO NOT send this when marshalling
 	Api           []Api
 	Host          string
 	Preprocessor  []string

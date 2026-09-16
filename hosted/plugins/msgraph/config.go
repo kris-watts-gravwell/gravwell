@@ -41,13 +41,13 @@ func (err ErrInvalidConfigValue) Error() string {
 // Config is the hosted plugin configuration for the MS Graph Security ingester.
 type Config struct {
 	hosted.BaseConfig
-	Tenant_ID           string
-	Client_ID           string
-	Client_Secret       string `json:"-"`
-	Content_Type        []ContentType
-	Tag_Name            string // Single tag override. Only valid with one content type.
-	Tag_Prefix          string // Prefix for auto-generated tags.
-	Lookback            int    // In hours.
+	Tenant_ID           string        `dynamic:"required"`
+	Client_ID           string        `dynamic:"required"`
+	Client_Secret       string        `json:"-" dynamic:"secret,required"`
+	Content_Type        []ContentType `dynamic:"required"`
+	Tag_Name            string        // Single tag override. Only valid with one content type.
+	Tag_Prefix          string        // Prefix for auto-generated tags.
+	Lookback            int           // In hours.
 	Requests_Per_Minute int
 	Request_Interval    int // In seconds between poll cycles.
 	Graph_Host          string

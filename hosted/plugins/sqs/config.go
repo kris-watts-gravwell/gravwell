@@ -27,12 +27,12 @@ const (
 type Config struct {
 	hosted.BaseConfig
 	hosted.SingleTagConfig
-	Queue_URL         string
-	Region            string
+	Queue_URL         string `dynamic:"required"`
+	Region            string `dynamic:"required"`
 	Endpoint          string
 	Credentials_Type  string
 	AKID              string
-	Secret            string `json:"-"` // DO NOT send this when marshalling
+	Secret            string `json:"-" dynamic:"secret"` // DO NOT send this when marshalling
 	Ignore_Timestamps bool
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/gravwell/gravwell/v4/ingest"
 	"github.com/gravwell/gravwell/v4/ingest/attach"
 	"github.com/gravwell/gravwell/v4/ingest/config"
+	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
 )
 
 func GetConfig(path, overlayPath string) (*cfgType, error) {
@@ -34,13 +35,16 @@ func GetConfig(path, overlayPath string) (*cfgType, error) {
 		IngestConfig: cr.Global,
 		Attach:       cr.Attach,
 		State:        cr.State,
+		Dynamic:      cr.Dynamic,
 		Configs:      cr.Configs,
 	}, nil
 }
 
 type cfgReadType struct {
-	Global config.IngestConfig
-	Attach attach.AttachConfig
+	Global  config.IngestConfig
+	Attach  attach.AttachConfig
+	Dynamic dynamic.Config
+
 	// State is not as abstract as it should be, but making that change should have minimal impact on end users.
 	// Given the size of storage.BoltConfig we only need to share a few keys on any new implementation.
 	State           storage.BoltConfig
@@ -52,7 +56,8 @@ type cfgReadType struct {
 // ingesters states, so we have a type that we can read and one that we actually use
 type cfgType struct {
 	config.IngestConfig
-	Attach attach.AttachConfig
+	Attach  attach.AttachConfig
+	Dynamic dynamic.Config
 	// State is not as abstract as it should be, but making that change should have minimal impact on end users.
 	// Given the size of storage.BoltConfig we only need to share a few keys on any new implementation.
 	State           storage.BoltConfig
@@ -67,6 +72,8 @@ func (c cfgType) Verify() (err error) {
 	} else if err = c.State.Verify(); err != nil {
 		return
 	} else if err = c.Configs.Verify(); err != nil {
+		return
+	} else if err = c.Dynamic.Verify(); err != nil {
 		return
 	}
 

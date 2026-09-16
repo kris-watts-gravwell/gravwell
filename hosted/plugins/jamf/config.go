@@ -47,9 +47,9 @@ type Config struct {
 	hosted.SingleTagConfig
 	hosted.PollingConfig
 
-	Host          string
-	Client_Id     string
-	Client_Secret string `json:"-"` // DO NOT send this when marshalling
+	Host          string `dynamic:"required"`
+	Client_Id     string `dynamic:"required"`
+	Client_Secret string `json:"-" dynamic:"secret,required"` // DO NOT send this when marshalling
 	Page_Size     int
 	Sections      []string
 

@@ -12,14 +12,17 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/debug"
+	"github.com/gravwell/gravwell/v4/hosted/plugins"
 	"github.com/gravwell/gravwell/v4/hosted/storage"
+	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
 	"github.com/gravwell/gravwell/v4/ingest/log"
 	"github.com/gravwell/gravwell/v4/ingesters/base"
 	"github.com/gravwell/gravwell/v4/ingesters/utils"
@@ -54,9 +57,37 @@ func main() {
 	}
 
 	lg := ib.Logger
-	_, ok := cfg.IngesterUUID()
+	guid, ok := cfg.IngesterUUID()
 	if !ok {
 		ib.Logger.FatalCode(0, "could not read ingester UUID")
+	}
+
+	ctx, cf := context.WithCancel(context.Background())
+	defer cf()
+
+	var dyn dynamic.Manager
+	if cfg.Dynamic.Enabled() {
+		fmt.Println("enabling dynamic config")
+		// ingest/config still hands back a github.com/google/uuid value.  Both types are
+		// [16]byte, so this conversion is exact and checked at compile time, unlike a
+		// round trip through a string.  It goes away when that package moves too.
+		g := uuid.UUID(guid)
+
+		if dyn, err = dynamic.NewDynamicConfigManager(ctx, cfg.Dynamic, g, ib.Logger); err != nil {
+			ib.Logger.FatalCode(0, "failed to load dynamic manager", log.KVErr(err))
+		} else if err = dyn.Load(cfg); err != nil {
+			// cfg, not &cfg.  cfg is already a *cfgType and the overlay loader needs a
+			// pointer to the struct, a pointer to the pointer is refused.
+			ib.Logger.FatalCode(0, "failed to load dynamic configurations", log.KVErr(err))
+		}
+	} else {
+		dyn = dynamic.NewNil()
+	}
+	defer dyn.Close()
+	if err = registerDynamicPluginTypes(dyn); err != nil {
+		ib.Logger.FatalCode(0, "failed to load dynamic plugin config types", log.KVErr(err))
+	} else if err = dyn.Start(); err != nil {
+		ib.Logger.FatalCode(0, "failed to start dynamic configuration client", log.KVErr(err))
 	}
 
 	// check that we have configured ingesters
@@ -111,24 +142,44 @@ func main() {
 	tckr := time.NewTicker(time.Minute)
 	defer tckr.Stop()
 
+	// reload rebuilds the configuration and hands it to the runtime manager.  A SIGHUP and
+	// a dynamic config update are the same operation arriving from two different places, so
+	// both drive this rather than each carrying their own copy of it.
+	reload := func() {
+		lg.Info("reloading configuration")
+		var newCfg *cfgType
+		var err error // deliberately shadows, a failed reload is not fatal to the process
+		if err = ib.ReloadConfig(&newCfg); err != nil {
+			lg.Error("failed to reload config", log.KVErr(err))
+			return // abort the reload
+		} else if newCfg == nil {
+			lg.Error("config reload produced no configuration")
+			return // abort the reload
+		} else if err = dyn.Load(newCfg); err != nil {
+			// newCfg, not &newCfg, the overlay loader needs a pointer to the struct
+			lg.Error("failed to reload dynamic config", log.KVErr(err))
+			return // abort the reload
+		}
+
+		if err = rm.reloadIngesters(newCfg); err != nil {
+			//hand the config into the run manager and tell it to reload
+			lg.Error("failed to reload ingesters", log.KVErr(err))
+		} else {
+			lg.Info("configuration reload complete")
+		}
+	}
+
 exitLoop:
 	for {
 		select {
 		case <-sig:
 			lg.Info("ingester shutting down")
 			break exitLoop
+		case <-dyn.Signal():
+			// a dynamic config update is treated the exact same as a SIGHUP
+			reload()
 		case <-hup:
-			// try to reload the config
-			lg.Info("reloading configuration")
-			var newCfg *cfgType
-			if err = ib.ReloadConfig(&newCfg); err != nil {
-				lg.Error("failed to reload config", log.KVErr(err))
-			} else if err = rm.reloadIngesters(newCfg); err != nil {
-				//hand the config into the run manager and tell it to reload
-				lg.Error("failed to reload ingesters", log.KVErr(err))
-			} else {
-				lg.Info("configuration reload complete")
-			}
+			reload()
 		case <-tckr.C:
 			// go check on all ingesters and see if we should try to restart one that has died
 			rm.startIngesters()
@@ -156,4 +207,23 @@ func stackCloseErrors(curr, next error, name string, guid uuid.UUID) error {
 		return next
 	}
 	return errors.Join(curr, next)
+}
+
+// registerDynamicPluginTypes registers all the dynamic plugin config types with the Dynamic Config manager
+func registerDynamicPluginTypes(dm dynamic.Manager) (err error) {
+	if dm == nil {
+		return errors.New("nil dynamic config manager")
+	}
+	// the plugins package derives this from its own config set, a new plugin needs no
+	// change here
+	var kinds []plugins.PluginKind
+	if kinds, err = plugins.Kinds(); err != nil {
+		return fmt.Errorf("failed to enumerate dynamic config types %w", err)
+	}
+	for _, pk := range kinds {
+		if err = dm.RegisterKind(pk.Kind, pk.Singleton, pk.Config); err != nil {
+			return fmt.Errorf("failed to register dynamic config type %s %w", pk.Kind, err)
+		}
+	}
+	return
 }

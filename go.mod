@@ -166,9 +166,11 @@ require (
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20201227073835-cf1acfcdf475 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sahilm/fuzzy v0.1.1 // indirect
 	github.com/shirou/gopsutil v2.20.9+incompatible // indirect
@@ -197,4 +199,8 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 	gopkg.in/gcfg.v1 v1.2.3 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
+	modernc.org/libc v1.70.0 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.11.0 // indirect
+	modernc.org/sqlite v1.46.2 // indirect
 )
