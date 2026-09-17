@@ -13,13 +13,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
 	"uuid"
 
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
 
-	_ "modernc.org/sqlite" // pure Go, so this builds without a C toolchain
+	// pure Go, SQLite machine translated rather than linked, so this builds with no C
+	// toolchain and no cgo on any platform the rest of the tree targets
+	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
 // schema is applied on every open, so pointing the server at a new file just works.
@@ -68,9 +71,7 @@ func OpenStore(pth string) (s *Store, err error) {
 		return nil, errors.New("empty storage path")
 	}
 	var db *sql.DB
-	// busy_timeout keeps the UI and the RPC side from tripping over each other, they are
-	// both writing to one file
-	if db, err = sql.Open(`sqlite`, pth+`?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)`); err != nil {
+	if db, err = sql.Open(`sqlite3`, storeDSN(pth)); err != nil {
 		return nil, fmt.Errorf("failed to open %s %w", pth, err)
 	}
 	if err = db.Ping(); err != nil {
@@ -82,6 +83,24 @@ func OpenStore(pth string) (s *Store, err error) {
 		return nil, fmt.Errorf("failed to apply schema %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+// storeDSN builds the data source name for the database at pth.
+//
+// The driver only reads parameters off a "file:" URI, a bare path is handed to SQLite
+// verbatim, so the path has to be wrapped rather than have a query string stapled onto
+// the end of it: that would open a database whose file name really does end in
+// "?_pragma=...".  Building it through url.URL is also what escapes a path holding a
+// question mark or a hash, which would otherwise be read as the start of the query.
+//
+// busy_timeout keeps the UI and the RPC side from tripping over each other, they are both
+// writing to one file.
+func storeDSN(pth string) string {
+	q := url.Values{}
+	q.Add(`_pragma`, `busy_timeout(5000)`)
+	q.Add(`_pragma`, `foreign_keys(1)`)
+	u := url.URL{Scheme: `file`, OmitHost: true, Path: pth, RawQuery: q.Encode()}
+	return u.String()
 }
 
 func (s *Store) Close() error {
