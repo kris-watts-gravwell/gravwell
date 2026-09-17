@@ -26,6 +26,7 @@ import (
 
 	"uuid"
 
+	"github.com/gravwell/gravwell/v4/hosted/plugins/sqs"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/rpc"
 )
@@ -1246,5 +1247,116 @@ func TestRequiredInTheUI(t *testing.T) {
 	}
 	if got := valueOf(run, `Tag-Name`); got != `changed` {
 		t.Errorf("the edit did not save, Tag-Name = %v", got)
+	}
+}
+
+// TestFormOffersEnumsAsPickers covers the control an enum earns.  A free text box for a
+// value that must be one of eleven named APIs is a guessing game the operator loses by
+// saving and reading the rejection.
+func TestFormOffersEnumsAsPickers(t *testing.T) {
+	h := newHarness(t)
+	proto, err := dynamic.MapRunnerDefinition(`SQS`, `SQS`, sqs.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.ReplaceKinds(uuid.New(), `edge`, []dynamic.RunnerDefinition{proto}); err != nil {
+		t.Fatal(err)
+	}
+	code, body := h.get(t, `/ui/new?kind=SQS`)
+	if code != http.StatusOK {
+		t.Fatalf("GET /ui/new = %d", code)
+	}
+	// a select, carrying exactly the declared choices
+	if !strings.Contains(body, `<select name="var.Credentials-Type"`) {
+		t.Errorf("Credentials-Type is not a picker:\n%s", body)
+	}
+	for _, opt := range []string{`static`, `environment`, `ec2role`} {
+		if !strings.Contains(body, `<option value="`+opt+`"`) {
+			t.Errorf("the picker does not offer %q", opt)
+		}
+	}
+	// and a conditional requirement is spelled out, because an asterisk cannot say "only
+	// when Credentials-Type is static"
+	if !strings.Contains(body, `required when Credentials-Type is`) {
+		t.Errorf("the conditional requirement is not explained:\n%s", body)
+	}
+}
+
+// TestFormRefusesAValueOutsideTheEnum is the enforcement behind the picker: the set is
+// the rule, not a suggestion, and a hand crafted post is still a post.
+func TestFormRefusesAValueOutsideTheEnum(t *testing.T) {
+	h := newHarness(t)
+	proto, err := dynamic.MapRunnerDefinition(`SQS`, `SQS`, sqs.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.ReplaceKinds(uuid.New(), `edge`, []dynamic.RunnerDefinition{proto}); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{}
+	form.Set(`kind`, `SQS`)
+	form.Set(`name`, `q`)
+	form.Set(`uuid`, uuid.New().String())
+	form.Set(`var.Queue-URL`, `https://sqs.us-east-1.amazonaws.com/1/q`)
+	form.Set(`var.Region`, `us-east-1`)
+	form.Set(`var.Credentials-Type`, `nonsense`)
+	form.Set(`var.AKID`, `akid`)
+	form.Set(`var.Secret`, `sec`)
+	_, body, _ := h.post(t, `/ui/save`, form)
+	if !strings.Contains(body, `not a valid Credentials-Type`) {
+		t.Errorf("a value outside the enum was accepted:\n%s", body)
+	}
+	if runners, _ := h.store.Runners(); len(runners) != 0 {
+		t.Errorf("it was stored anyway: %d runners", len(runners))
+	}
+}
+
+// TestFormEnforcesConditionalRequirement is the SQS bug end to end: static credentials
+// with no key must be refused, and the two role based modes must not be.
+func TestFormEnforcesConditionalRequirement(t *testing.T) {
+	h := newHarness(t)
+	proto, err := dynamic.MapRunnerDefinition(`SQS`, `SQS`, sqs.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.ReplaceKinds(uuid.New(), `edge`, []dynamic.RunnerDefinition{proto}); err != nil {
+		t.Fatal(err)
+	}
+	save := func(mode string, withKey bool) string {
+		t.Helper()
+		form := url.Values{}
+		form.Set(`kind`, `SQS`)
+		form.Set(`name`, `q-`+mode+fmt.Sprint(withKey))
+		form.Set(`uuid`, uuid.New().String())
+		form.Set(`var.Queue-URL`, `https://sqs.us-east-1.amazonaws.com/1/q`)
+		form.Set(`var.Region`, `us-east-1`)
+		if mode != `` {
+			form.Set(`var.Credentials-Type`, mode)
+		}
+		if withKey {
+			form.Set(`var.AKID`, `akid`)
+			form.Set(`var.Secret`, `sec`)
+		}
+		_, body, _ := h.post(t, `/ui/save`, form)
+		return body
+	}
+
+	// static with no key: refused, and the reason says why it was needed
+	if body := save(`static`, false); !strings.Contains(body, `AKID is required when Credentials-Type is`) {
+		t.Errorf("static credentials with no key were accepted:\n%s", body)
+	}
+	// unset means static, so the same applies
+	if body := save(``, false); !strings.Contains(body, `AKID is required when Credentials-Type is`) {
+		t.Errorf("an unset Credentials-Type dropped the requirement:\n%s", body)
+	}
+	// the role based modes do not need one, and must not be blocked
+	for _, mode := range []string{`environment`, `ec2role`} {
+		if body := save(mode, false); !strings.Contains(body, `Saved`) {
+			t.Errorf("%s credentials were blocked for want of a key they do not use:\n%s", mode, body)
+		}
+	}
+	// and static with a key saves
+	if body := save(`static`, true); !strings.Contains(body, `Saved`) {
+		t.Errorf("a complete static configuration was refused:\n%s", body)
 	}
 }

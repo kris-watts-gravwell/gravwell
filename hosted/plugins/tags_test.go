@@ -9,7 +9,9 @@
 package plugins
 
 import (
+	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -220,4 +222,143 @@ func hasTagField(rt reflect.Type, depth int) bool {
 		}
 	}
 	return false
+}
+
+// TestEnumsMatchTheCodeTheyDescribe keeps a declared value set from drifting from the set
+// the plugin actually accepts.  A picker that offers a value Verify rejects is worse than
+// a text box: it looks like an endorsement.
+func TestEnumsMatchTheCodeTheyDescribe(t *testing.T) {
+	want := map[string]map[string][]string{
+		`Mimecast`: {`Api`: mimecastApis()},
+		`MSGraph`:  {`Content-Type`: {`alerts`, `secureScores`, `controlProfiles`}},
+		`SQS`:      {`Credentials-Type`: {`static`, `environment`, `ec2role`}},
+	}
+	kinds, err := Kinds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pk := range kinds {
+		rd, err := dynamic.MapRunnerDefinition(pk.Kind, pk.Kind, pk.Config)
+		if err != nil {
+			t.Fatalf("%s: %v", pk.Kind, err)
+		}
+		expect := want[pk.Kind]
+		for _, v := range rd.Variables {
+			exp, declared := expect[v.Name]
+			switch {
+			case declared && len(v.Enum) == 0:
+				t.Errorf("%s %s: lost its enum", pk.Kind, v.Name)
+			case !declared && len(v.Enum) > 0:
+				t.Errorf("%s %s: unexpected enum %v, this test needs updating", pk.Kind, v.Name, v.Enum)
+			case declared:
+				// compared as sets: the order in the tag is what the picker shows, and
+				// that is a presentation choice.  What has to hold is that nothing is
+				// offered which the plugin rejects, and nothing it accepts is missing.
+				missing, extra := diffSets(exp, v.Enum)
+				if len(missing) > 0 {
+					t.Errorf("%s %s: the plugin accepts %v but the picker does not offer them",
+						pk.Kind, v.Name, missing)
+				}
+				if len(extra) > 0 {
+					t.Errorf("%s %s: the picker offers %v which the plugin rejects",
+						pk.Kind, v.Name, extra)
+				}
+			}
+		}
+	}
+}
+
+// mimecastApis is the set the plugin actually supports, read off the plugin rather than
+// copied, so adding an API to the code and forgetting the tag fails here.
+func mimecastApis() []string {
+	out := []string{string(mimecast.AuditApi)}
+	for api := range mimecast.SIEMApiEvents {
+		out = append(out, string(api))
+	}
+	return out
+}
+
+// diffSets reports what is in want but not got, and in got but not want.
+func diffSets(want, got []string) (missing, extra []string) {
+	have := make(map[string]bool, len(got))
+	for _, g := range got {
+		have[g] = true
+	}
+	wanted := make(map[string]bool, len(want))
+	for _, w := range want {
+		wanted[w] = true
+		if !have[w] {
+			missing = append(missing, w)
+		}
+	}
+	for _, g := range got {
+		if !wanted[g] {
+			extra = append(extra, g)
+		}
+	}
+	slices.Sort(missing)
+	slices.Sort(extra)
+	return
+}
+
+// TestSQSCredentialsAreConditionallyRequired is the bug this closes.
+//
+// AKID and Secret are needed for static credentials and meaningless for the other two
+// modes.  Marked always required they would block role based auth; marked optional, which
+// is what they were, an operator can save a static configuration with no key in it and
+// only find out when the ingester refuses it.
+func TestSQSCredentialsAreConditionallyRequired(t *testing.T) {
+	rd, err := dynamic.MapRunnerDefinition(`SQS`, `probe`, sqs.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{`AKID`, `Secret`} {
+		v, ok := findVarByName(rd, name)
+		if !ok {
+			t.Fatalf("no %s variable", name)
+		}
+		if v.Required {
+			t.Errorf("%s is marked always required, which blocks environment and ec2role credentials", name)
+		}
+		if v.RequiredWhen == nil {
+			t.Fatalf("%s carries no condition, so a static config with no credentials still saves", name)
+		}
+		if v.RequiredWhen.Field != `Credentials-Type` {
+			t.Errorf("%s depends on %q", name, v.RequiredWhen.Field)
+		}
+	}
+
+	set := func(mode any) dynamic.RunnerDefinition {
+		out := rd
+		out.Variables = append([]dynamic.Variable(nil), rd.Variables...)
+		for i := range out.Variables {
+			if out.Variables[i].Name == `Credentials-Type` {
+				out.Variables[i].Value = mode
+			}
+		}
+		return out
+	}
+	akid, _ := findVarByName(rd, `AKID`)
+	for _, tc := range []struct {
+		mode any
+		want bool
+	}{
+		{`static`, true},
+		{nil, true}, // unset means static
+		{`environment`, false},
+		{`ec2role`, false},
+	} {
+		if got := set(tc.mode).RequiredNow(akid); got != tc.want {
+			t.Errorf("Credentials-Type=%v: AKID required = %v, want %v", tc.mode, got, tc.want)
+		}
+	}
+}
+
+func findVarByName(c dynamic.RunnerDefinition, name string) (dynamic.Variable, bool) {
+	for _, v := range c.Variables {
+		if v.Name == name {
+			return v, true
+		}
+	}
+	return dynamic.Variable{}, false
 }

@@ -203,7 +203,22 @@
 		<label>
 			<span class="lbl">{{.Name}}{{if .Required}} <span class="req">*</span>{{end}} <span class="ty">{{.Type}}</span></span>
 			{{- if .Description }}<span class="hint">{{.Description}}</span>{{ end }}
-			{{- if eq .Control "secret" }}
+			{{- if .RequiredWhen }}<span class="hint cond">{{.RequiredWhen}}</span>{{ end }}
+			{{- if eq .Control "select" }}
+			<select name="var.{{.Name}}"{{if .Required}} required{{end}}>
+				{{- if not .Required }}<option value=""></option>{{ end }}
+				{{- range .Options }}
+				<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Value}}</option>
+				{{- end }}
+			</select>
+			{{- else if eq .Control "multiselect" }}
+			<span class="hint">Hold ctrl or cmd to choose more than one.</span>
+			<select name="var.{{.Name}}" multiple size="{{if lt (len .Options) 8}}{{len .Options}}{{else}}8{{end}}"{{if .Required}} required{{end}}>
+				{{- range .Options }}
+				<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Value}}</option>
+				{{- end }}
+			</select>
+			{{- else if eq .Control "secret" }}
 			{{- /* a required secret that is already set must not be marked required, the
 			       form never shows it and an empty box means "keep what is stored" */ -}}
 			<span class="secretwrap">

@@ -27,12 +27,15 @@ const (
 type Config struct {
 	hosted.BaseConfig
 	hosted.SingleTagConfig
-	Queue_URL         string `dynamic:"required"`
-	Region            string `dynamic:"required"`
-	Endpoint          string
-	Credentials_Type  string
-	AKID              string
-	Secret            string `json:"-" dynamic:"secret"` // DO NOT send this when marshalling
+	Queue_URL        string `dynamic:"required"`
+	Region           string `dynamic:"required"`
+	Endpoint         string
+	Credentials_Type string `dynamic:"enum=static|environment|ec2role"`
+	// AKID and Secret are only needed for static credentials.  An empty Credentials-Type
+	// means static, see sqs_common.GetCredentials, so the condition has to match that too
+	// or leaving the type alone would quietly drop the requirement.
+	AKID              string `dynamic:"requiredif=Credentials-Type:|static"`
+	Secret            string `json:"-" dynamic:"secret,requiredif=Credentials-Type:|static"` // DO NOT send this when marshalling
 	Ignore_Timestamps bool
 }
 

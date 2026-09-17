@@ -30,7 +30,7 @@ type Config struct {
 	hosted.PollingConfig
 	Client_Id     string `json:"-" dynamic:"secret,required"` // DO NOT send this when marshalling
 	Client_Secret string `json:"-" dynamic:"secret,required"` // DO NOT send this when marshalling
-	Api           []Api
+	Api           []Api  `dynamic:"enum=audit|mta-delivery|mta-receipt|mta-process|mta-av|mta-spam|mta-internal|mta-impersonation|mta-url|mta-attachment|mta-journal"`
 	Host          string
 	Preprocessor  []string
 }

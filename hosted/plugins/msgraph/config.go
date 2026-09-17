@@ -44,7 +44,7 @@ type Config struct {
 	Tenant_ID           string        `dynamic:"required"`
 	Client_ID           string        `dynamic:"required"`
 	Client_Secret       string        `json:"-" dynamic:"secret,required"`
-	Content_Type        []ContentType `dynamic:"required"`
+	Content_Type        []ContentType `dynamic:"required,enum=alerts|secureScores|controlProfiles"`
 	Tag_Name            string        // Single tag override. Only valid with one content type.
 	Tag_Prefix          string        // Prefix for auto-generated tags.
 	Lookback            int           // In hours.

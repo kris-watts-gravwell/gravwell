@@ -47,6 +47,27 @@ const (
 	// than a form.
 	optRequired = `required`
 
+	// optEnum lists the complete set of values a member may take:
+	//
+	//	Credentials_Type string `dynamic:"enum=static|environment|ec2role"`
+	//
+	// A member with one is drawn as a picker rather than a text box, which is the
+	// difference between choosing a value and guessing one.  The separator is a pipe so
+	// that a comma still separates one option from the next.
+	optEnum = `enum`
+
+	// optRequiredIf makes a member required only in the company of another:
+	//
+	//	AKID string `dynamic:"requiredif=Credentials-Type:|static"`
+	//
+	// A form is a flat list of fields and cannot say "needed only when", so without this
+	// a conditionally required member is either marked required, which blocks the
+	// configurations that genuinely do not need it, or marked optional, which lets
+	// someone save one that cannot run.  An empty entry in the value list matches a
+	// variable that is not set, which is how a member required alongside a default is
+	// written: leaving the other field alone is still choosing its default.
+	optRequiredIf = `requiredif`
+
 	// iniRawUnsafe is the set of runes the gcfg raw string scanner treats specially:
 	// a backtick, a backslash and a double quote.  A value holding none of them is
 	// copied through a backtick string verbatim.
@@ -155,6 +176,34 @@ func metadataOf(v any) *RunnerMetadata {
 	return nil
 }
 
+// Condition names another variable and the values of it that make this one apply.
+//
+// An empty string among the values matches a variable that is not set, which is what a
+// member that is only required alongside a default needs: the default is what an unset
+// value means, so leaving it alone has to count as choosing it.
+type Condition struct {
+	Field  string
+	Values []string `json:",omitempty"`
+}
+
+// Matches reports whether the condition holds given the value the named variable
+// currently carries.  A nil value is treated as the empty string, see Condition.
+func (c *Condition) Matches(v any) bool {
+	if c == nil {
+		return true
+	}
+	var cur string
+	if v != nil {
+		cur = fmt.Sprintf("%v", v)
+	}
+	for _, want := range c.Values {
+		if want == cur {
+			return true
+		}
+	}
+	return false
+}
+
 // Variable is a single value in a dynamic configuration, it may be some primative
 // type like a string, int, float, etc.. or it may be a vector of primative types.
 type Variable struct {
@@ -163,6 +212,51 @@ type Variable struct {
 	Type        ValueType
 	Description string `json:",omitempty"`
 	Required    bool
+
+	// Enum, when set, is every value this variable may take.  A consumer should offer
+	// exactly these and refuse anything else, and for a list it applies to each entry.
+	Enum []string `json:",omitempty"`
+
+	// RequiredWhen makes this variable required only while another one holds one of a set
+	// of values.  Required and RequiredWhen are independent: Required means always.
+	RequiredWhen *Condition `json:",omitempty"`
+}
+
+// RequiredNow reports whether a variable has to be filled in given what the rest of the
+// configuration currently says.
+//
+// This is the question a form has to answer, and the variable cannot answer it alone: a
+// member needed only alongside a particular choice elsewhere is required or not depending
+// on what that choice currently is.
+func (c RunnerDefinition) RequiredNow(v Variable) bool {
+	if v.Required {
+		return true
+	}
+	if v.RequiredWhen == nil {
+		return false
+	}
+	for _, cur := range c.Variables {
+		if cur.Name == v.RequiredWhen.Field {
+			return v.RequiredWhen.Matches(cur.Value)
+		}
+	}
+	// the variable it depends on is not in this configuration at all, so the condition
+	// cannot hold and nothing is being asked for
+	return false
+}
+
+// inEnum reports whether a value is one this variable allows.  A variable with no Enum
+// allows everything.
+func (v Variable) inEnum(s string) error {
+	if len(v.Enum) == 0 {
+		return nil
+	}
+	for _, cur := range v.Enum {
+		if cur == s {
+			return nil
+		}
+	}
+	return fmt.Errorf("%q is not a valid %s, it must be one of %s", s, v.Name, strings.Join(v.Enum, `, `))
 }
 
 // Assignment narrows which ingesters a configuration is meant for.  An empty Assignment,
@@ -252,6 +346,9 @@ func (v Variable) Validate() error {
 	case string:
 		switch v.Type {
 		case typeString:
+			if err := v.inEnum(val); err != nil {
+				return err
+			}
 		case typeSecret:
 		case typeUUID:
 			if _, err := uuid.Parse(val); err != nil {
@@ -263,14 +360,25 @@ func (v Variable) Validate() error {
 	case uuid.UUID:
 		return v.requireType(typeUUID)
 	case []string:
-		return v.requireType(typeSliceString)
+		if err := v.requireType(typeSliceString); err != nil {
+			return err
+		}
+		for _, cur := range val {
+			if err := v.inEnum(cur); err != nil {
+				return err
+			}
+		}
 	case []any:
 		// encoding/json hands back every array as a []any, so walk it to see what we really have
 		switch v.Type {
 		case typeSliceString:
 			for i, x := range val {
-				if _, ok := x.(string); !ok {
+				cur, ok := x.(string)
+				if !ok {
 					return fmt.Errorf("Value element %d is a %T, not a string", i, x)
+				}
+				if err := v.inEnum(cur); err != nil {
+					return err
 				}
 			}
 		case typeSliceStruct:
@@ -652,6 +760,36 @@ func mapField(f reflect.StructField, fv reflect.Value, depth int) (v Variable, e
 	// up front rather than letting someone save a configuration the ingester will refuse
 	v.Required = hasDynamicOption(f, optRequired)
 
+	// a member tagged dynamic:"enum=a|b|c" may only hold one of those, so a form can
+	// offer them rather than leaving someone to find the set by trial and error
+	if raw, ok := dynamicOption(f, optEnum); ok {
+		if v.Enum = splitTagList(raw, false); len(v.Enum) == 0 {
+			err = fmt.Errorf("%s: %w, an enum must list at least one value", v.Name, ErrUnsupportedType)
+			return
+		}
+		// an enum is a set of strings, on the member itself or on each of its entries
+		if v.Type != typeString && v.Type != typeSliceString {
+			err = fmt.Errorf("%s: %w, an enum must be a string or a []string, got %s",
+				v.Name, ErrUnsupportedType, ft)
+			return
+		}
+	}
+
+	// a member tagged dynamic:"requiredif=Other:a|b" is required only while the variable
+	// it names holds one of those values
+	if raw, ok := dynamicOption(f, optRequiredIf); ok {
+		field, values, found := strings.Cut(raw, `:`)
+		if field = strings.TrimSpace(field); !found || field == `` {
+			err = fmt.Errorf("%s: %w, requiredif must be written Field:value", v.Name, ErrUnsupportedType)
+			return
+		}
+		v.RequiredWhen = &Condition{Field: field, Values: splitTagList(values, true)}
+		if len(v.RequiredWhen.Values) == 0 {
+			err = fmt.Errorf("%s: %w, requiredif must name at least one value", v.Name, ErrUnsupportedType)
+			return
+		}
+	}
+
 	// a member tagged dynamic:"secret" is a string that a GUI should mask.  It is typed
 	// as a secret rather than a string so that every consumer knows, rather than each one
 	// having to guess from the member's name.
@@ -691,6 +829,33 @@ func hasDynamicOption(f reflect.StructField, opt string) bool {
 		}
 	}
 	return false
+}
+
+// dynamicOption returns the value of a name=value option in the dynamic tag.
+//
+// The tag stays comma separated, so a value that is itself a list uses a pipe: a comma
+// inside one would end the option rather than extend it.
+func dynamicOption(f reflect.StructField, name string) (string, bool) {
+	for _, cur := range strings.Split(f.Tag.Get(dynamicTag), `,`) {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(cur), name+`=`); ok {
+			return strings.TrimSpace(v), true
+		}
+	}
+	return ``, false
+}
+
+// splitTagList splits a pipe separated tag value.  Empty entries are kept or dropped by
+// the caller: they are meaningless in an enum and meaningful in a condition, where one
+// stands for "not set".
+func splitTagList(raw string, keepEmpty bool) (r []string) {
+	for _, cur := range strings.Split(raw, `|`) {
+		cur = strings.TrimSpace(cur)
+		if cur == `` && !keepEmpty {
+			continue
+		}
+		r = append(r, cur)
+	}
+	return
 }
 
 // iniName returns the name gcfg would match this member against, honoring a gcfg ident

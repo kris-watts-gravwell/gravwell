@@ -220,3 +220,8 @@ input[type=text]:focus, input[type=number]:focus, textarea:focus, select:focus {
 .idcell .icon { margin-right: 0; vertical-align: baseline; }
 .icon.ing.on { color: var(--ok); }
 .icon.ing.off { color: var(--muted); }
+
+/* a requirement that depends on another field cannot be expressed by the asterisk alone,
+   so it is spelled out under the label */
+.hint.cond { color: var(--muted); font-style: italic; }
+select[multiple] { min-height: 5.5rem; }
