@@ -54,6 +54,17 @@ CREATE TABLE IF NOT EXISTS ingesters (
 	class     TEXT NOT NULL DEFAULT '',
 	last_seen INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS runner_status (
+	runner   TEXT NOT NULL,
+	ingester TEXT NOT NULL,
+	kind     TEXT NOT NULL DEFAULT '',
+	name     TEXT NOT NULL DEFAULT '',
+	error    TEXT NOT NULL DEFAULT '',
+	since    INTEGER NOT NULL,
+	updated  INTEGER NOT NULL,
+	PRIMARY KEY (runner, ingester)
+);
+CREATE INDEX IF NOT EXISTS runner_status_ingester ON runner_status(ingester);
 `
 
 var (
@@ -300,6 +311,28 @@ func (s *Store) Kinds() (r []dynamic.RunnerDefinition, err error) {
 	return
 }
 
+// KindMetadata is the description each kind ships with, keyed by kind.
+//
+// It is read back out of the stored definition rather than kept in columns of its own.
+// The definition is the record of record and metadata is only ever read whole, so a
+// column would buy nothing but a schema migration on every existing database.
+//
+// A kind with no metadata is absent from the map rather than present and empty, so a
+// caller can tell "this plugin describes itself" from "this plugin does not".
+func (s *Store) KindMetadata() (r map[string]*dynamic.RunnerMetadata, err error) {
+	var kinds []dynamic.RunnerDefinition
+	if kinds, err = s.Kinds(); err != nil {
+		return nil, err
+	}
+	r = make(map[string]*dynamic.RunnerMetadata, len(kinds))
+	for _, rd := range kinds {
+		if rd.Metadata != nil {
+			r[rd.Kind] = rd.Metadata
+		}
+	}
+	return
+}
+
 // Kind fetches one registration.
 func (s *Store) Kind(kind string) (rd dynamic.RunnerDefinition, err error) {
 	var blob string
@@ -317,6 +350,12 @@ func (s *Store) Kind(kind string) (rd dynamic.RunnerDefinition, err error) {
 
 // PutRunner records a configured runner.  The UUID is the identity, so saving an edit
 // updates in place while a new UUID is a new runner.
+//
+// Metadata is dropped rather than stored.  An icon and a version describe a plugin, not
+// one configuration of it, and the registration already holds them: keeping a copy on
+// every runner would store the same SVG once per configured instance and ship it back
+// down to every ingester on every poll, to say something they already know.  The
+// interface looks a runner's icon up through its kind, see KindMetadata.
 func (s *Store) PutRunner(rd dynamic.RunnerDefinition) (err error) {
 	if rd.Kind == `` {
 		return errors.New("runner has no kind")
@@ -325,6 +364,7 @@ func (s *Store) PutRunner(rd dynamic.RunnerDefinition) (err error) {
 	} else if rd.UUID == uuid.Nil() {
 		return errors.New("runner has no UUID")
 	}
+	rd.Metadata = nil // a copy, the caller's definition is untouched
 	var blob []byte
 	if blob, err = json.Marshal(rd); err != nil {
 		return fmt.Errorf("failed to encode runner %w", err)
@@ -370,7 +410,10 @@ func (s *Store) Runner(id uuid.UUID) (rd dynamic.RunnerDefinition, err error) {
 	return
 }
 
-// DeleteRunner removes a configured runner.
+// DeleteRunner removes a configured runner, and with it everything any ingester had to
+// say about it.  Leaving the statuses behind would strand an error against a runner that
+// no longer exists, and the next report cannot clear it because the ingester will not
+// mention a runner it was never handed.
 func (s *Store) DeleteRunner(id uuid.UUID) (err error) {
 	var res sql.Result
 	if res, err = s.db.Exec(`DELETE FROM runners WHERE uuid = ?`, id.String()); err != nil {
@@ -379,6 +422,154 @@ func (s *Store) DeleteRunner(id uuid.UUID) (err error) {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("runner %v %w", id, ErrNotFound)
 	}
+	return s.DeleteStatuses(id)
+}
+
+// StatusRow is one ingester's last word about one configured runner.
+//
+// Error is empty when that ingester accepted the configuration, which is how a runner
+// that has come good is told apart from one nobody has reported on.  Since and Updated
+// are both the server's clock, see ReplaceStatuses.
+type StatusRow struct {
+	Runner   uuid.UUID
+	Ingester uuid.UUID
+	Kind     string
+	Name     string
+	Error    string
+	Since    time.Time
+	Updated  time.Time
+}
+
+// OK reports whether the reporting ingester accepted the configuration.
+func (sr StatusRow) OK() bool { return sr.Error == `` }
+
+// ReplaceStatuses records what one ingester currently makes of its configurations.
+//
+// The whole set is replaced rather than merged, the same way registrations are.  That is
+// what makes a runner that has come good clear itself: it arrives reported clean and
+// overwrites the error that was there, and a runner that is no longer assigned to this
+// ingester simply stops arriving and its row goes.  Nothing has to remember to send a
+// retraction, which is the kind of thing that gets forgotten and leaves a stale red mark
+// on a screen forever.
+//
+// Since is carried forward while the state is unchanged, so a row can answer "how long
+// has this been broken" and not just "is it broken now".  A different error, or an error
+// where there was none, starts the clock again.  Both timestamps are taken here rather
+// than sent by the ingester: an operator comparing two ingesters needs one clock, not two
+// that disagree by however wrong those hosts are.
+func (s *Store) ReplaceStatuses(ingester uuid.UUID, statuses []dynamic.RunnerStatus) (err error) {
+	if ingester == uuid.Nil() {
+		return errors.New("status report has no ingester UUID")
+	}
+	var tx *sql.Tx
+	if tx, err = s.db.Begin(); err != nil {
+		return fmt.Errorf("failed to start a transaction %w", err)
+	}
+	defer tx.Rollback() // a no-op once committed, and the undo if anything below fails
+
+	// what we already hold for this ingester, so an unchanged state keeps its since
+	prior := map[string]struct {
+		msg   string
+		since int64
+	}{}
+	var rows *sql.Rows
+	if rows, err = tx.Query(`SELECT runner, error, since FROM runner_status WHERE ingester = ?`,
+		ingester.String()); err != nil {
+		return fmt.Errorf("failed to read the previous statuses %w", err)
+	}
+	for rows.Next() {
+		var runner, msg string
+		var since int64
+		if err = rows.Scan(&runner, &msg, &since); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to read the previous statuses %w", err)
+		}
+		prior[runner] = struct {
+			msg   string
+			since int64
+		}{msg: msg, since: since}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("failed to read the previous statuses %w", err)
+	}
+	rows.Close()
+
+	if _, err = tx.Exec(`DELETE FROM runner_status WHERE ingester = ?`, ingester.String()); err != nil {
+		return fmt.Errorf("failed to clear the previous statuses %w", err)
+	}
+
+	now := time.Now().UnixNano()
+	for _, rs := range statuses {
+		if rs.UUID == uuid.Nil() {
+			continue // nothing to key it on, and the ingester already logged it
+		}
+		runner := rs.UUID.String()
+		since := now
+		if was, ok := prior[runner]; ok && was.msg == rs.Error {
+			since = was.since // same state as last time, the clock keeps running
+		}
+		if _, err = tx.Exec(`INSERT INTO runner_status
+			(runner, ingester, kind, name, error, since, updated) VALUES (?,?,?,?,?,?,?)`,
+			runner, ingester.String(), rs.Kind, rs.Name, rs.Error, since, now); err != nil {
+			return fmt.Errorf("failed to store the status of %s %w", runner, err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit statuses %w", err)
+	}
+	return
+}
+
+// Statuses is every status row, newest report first, for the interface to draw from.
+func (s *Store) Statuses() (r []StatusRow, err error) {
+	return s.scanStatuses(`SELECT runner, ingester, kind, name, error, since, updated
+		FROM runner_status ORDER BY updated DESC, runner ASC`)
+}
+
+// RunnerStatuses is what every ingester has said about one runner.  An error first
+// ordering puts the thing an operator opened the page to read at the top.
+func (s *Store) RunnerStatuses(id uuid.UUID) (r []StatusRow, err error) {
+	return s.scanStatuses(`SELECT runner, ingester, kind, name, error, since, updated
+		FROM runner_status WHERE runner = ?
+		ORDER BY (error = '') ASC, updated DESC`, id.String())
+}
+
+// DeleteStatuses drops every status held for a runner, for when the runner itself goes.
+func (s *Store) DeleteStatuses(id uuid.UUID) (err error) {
+	if _, err = s.db.Exec(`DELETE FROM runner_status WHERE runner = ?`, id.String()); err != nil {
+		return fmt.Errorf("failed to delete the statuses of %v %w", id, err)
+	}
+	return
+}
+
+// scanStatuses runs a status query and decodes it.
+func (s *Store) scanStatuses(query string, args ...any) (r []StatusRow, err error) {
+	var rows *sql.Rows
+	if rows, err = s.db.Query(query, args...); err != nil {
+		return nil, fmt.Errorf("failed to list statuses %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var runner, ingester string
+		var row StatusRow
+		var since, updated int64
+		if err = rows.Scan(&runner, &ingester, &row.Kind, &row.Name, &row.Error, &since, &updated); err != nil {
+			return nil, err
+		}
+		// a row we cannot make sense of is not worth failing a page over
+		if row.Runner, err = uuid.Parse(runner); err != nil {
+			err = nil
+			continue
+		}
+		if row.Ingester, err = uuid.Parse(ingester); err != nil {
+			err = nil
+			continue
+		}
+		row.Since, row.Updated = time.Unix(0, since), time.Unix(0, updated)
+		r = append(r, row)
+	}
+	err = rows.Err()
 	return
 }
 

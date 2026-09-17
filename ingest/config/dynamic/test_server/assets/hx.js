@@ -127,7 +127,13 @@
 				t = t.trim();
 				var every = t.match(/^every\s+([0-9.]+)s$/);
 				if (every) {
-					setInterval(function () { fire(el, method, url); }, parseFloat(every[1]) * 1000);
+					// a fragment that polls can itself be swapped away, and its timer
+					// would otherwise keep firing at a detached node forever, once per
+					// time the fragment was ever opened
+					var iv = setInterval(function () {
+						if (!el.isConnected) { clearInterval(iv); return; }
+						fire(el, method, url);
+					}, parseFloat(every[1]) * 1000);
 				} else if (t === 'load') {
 					fire(el, method, url);
 				} else if (t === 'submit') {

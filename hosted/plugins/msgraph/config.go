@@ -122,6 +122,11 @@ func (c *Config) Verify() error {
 	if err := c.BaseConfig.Verify(); err != nil {
 		errs = append(errs, err)
 	}
+	// the resolved tags rather than the fields they came from: with a prefix and several
+	// content types this is one tag per type, and the prefix on its own is not a tag
+	if err := hosted.VerifyTags(c); err != nil {
+		errs = append(errs, err)
+	}
 
 	if len(errs) > 0 {
 		return errors.Join(errs...)

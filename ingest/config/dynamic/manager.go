@@ -32,7 +32,18 @@ var (
 	ErrUnknownKind         = errors.New("runner kind unsupported, no registration kind found")
 	ErrKindRegistered      = errors.New("runner kind already registered")
 	ErrRunnerRegistered    = errors.New("runner of the same kind and name already registered")
+	ErrInvalidRunner       = errors.New("runner configuration is not usable")
 )
+
+// validationSection is the INI section name a definition is rendered under when it is
+// being checked rather than written.
+//
+// A fixed name is used rather than the real kind because the kind has to become a Go
+// struct field to be parsed back, and a kind is a free form string: "okta" is a perfectly
+// legal kind and not a legal exported field name.  The section header is the one part of
+// the rendering that validation does not need to be faithful about, everything that can
+// actually be wrong lives in the keys below it.
+const validationSection = `Runner`
 
 type Manager interface {
 	Start() error
@@ -49,6 +60,19 @@ type configuredRunner struct {
 	remote      bool   // came from the webserver rather than from this ingester
 }
 
+// registeredKind is a kind registration together with the Go type it was derived from.
+//
+// The type is the whole point.  A definition that arrives from a webserver has been
+// through JSON and describes itself only as strings, ints and bools, which is not enough
+// to know whether the plugin can actually run it.  Keeping the type means an incoming
+// definition can be rendered, parsed back with the same loader the ingester uses at
+// startup, and handed to the plugin's own Verify, which is the only thing that knows an
+// Interval of "3" is not a duration.
+type registeredKind struct {
+	RunnerDefinition
+	typ reflect.Type // the plugin's config struct, never a pointer
+}
+
 type NopManager struct {
 	// mtx guards the two lists.  A DynamicConfigManager syncs from a background
 	// goroutine while the ingester is still registering from its main thread, so these
@@ -58,7 +82,7 @@ type NopManager struct {
 	mtx sync.Mutex
 
 	// Available is the list of definitions that have been registered, only one entry per kind
-	Available []RunnerDefinition
+	Available []registeredKind
 
 	// Configured is a complete list of configured runners, each item must contain a fully
 	// Populated Variable block
@@ -136,16 +160,86 @@ func (n *NopManager) RegisterKind(kind string, singleton bool, v any) (err error
 		err = fmt.Errorf("%w %q", ErrKindRegistered, rd.Kind)
 		return
 	}
-	n.Available = append(n.Available, rd)
+	n.Available = append(n.Available, registeredKind{RunnerDefinition: rd, typ: derefType(reflect.TypeOf(v))})
 	return
+}
+
+// Validate reports whether a definition is one this ingester could actually run.
+//
+// It is the same path the configuration takes for real, which is what makes the answer
+// worth anything: the definition is rendered to an INI block, parsed back with the loader
+// the ingester uses at startup, and handed to the plugin's own Verify.  That catches the
+// three separate ways a definition can be wrong, and they are genuinely separate: a value
+// of the wrong type never parses, a key the plugin does not have never stores, and a value
+// that is fine as a string but meaningless to the plugin is only ever caught by Verify.
+//
+// A nil return means every one of those passed.
+func (n *NopManager) Validate(rd RunnerDefinition) error {
+	n.mtx.Lock()
+	defer n.mtx.Unlock()
+	return n.validateLocked(rd)
+}
+
+// validateLocked is Validate with the lock already held.
+func (n *NopManager) validateLocked(rd RunnerDefinition) (err error) {
+	var rk registeredKind
+	var ok bool
+	if rk, ok = n.lookupKindLocked(rd.Kind); !ok {
+		return fmt.Errorf("%w %q", ErrUnknownKind, rd.Kind)
+	} else if rk.typ == nil || rk.typ.Kind() != reflect.Struct {
+		// a kind registered from something that is not a struct cannot be checked, and
+		// refusing to run it on those grounds would be worse than running it
+		return nil
+	}
+
+	// render under the substitute section name, see validationSection
+	probe := rd
+	probe.Kind = validationSection
+	if probe.Name == `` {
+		probe.Name = validationSection // INI insists on a name, this one is thrown away
+	}
+	var blob string
+	if blob, err = probe.INI(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidRunner, err)
+	}
+
+	// struct{ Runner map[string]*T }, which is the shape gcfg maps a named section onto
+	holder := reflect.New(reflect.StructOf([]reflect.StructField{{
+		Name: validationSection,
+		Type: reflect.MapOf(reflect.TypeFor[string](), reflect.PointerTo(rk.typ)),
+	}}))
+	if err = config.LoadConfigBytes(holder.Interface(), []byte(blob)); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidRunner, err)
+	}
+
+	// exactly one subsection went in, so exactly one should have come back out
+	set := holder.Elem().Field(0)
+	if set.Len() != 1 {
+		return fmt.Errorf("%w: produced %d configurations, want 1", ErrInvalidRunner, set.Len())
+	}
+	for _, k := range set.MapKeys() {
+		cur := set.MapIndex(k)
+		if cur.IsNil() {
+			return fmt.Errorf("%w: produced no configuration", ErrInvalidRunner)
+		}
+		// Verify is optional, a plugin that does not have one has nothing further to say
+		if v, ok := cur.Interface().(interface{ Verify() error }); ok {
+			if err = v.Verify(); err != nil {
+				return fmt.Errorf("%w: %w", ErrInvalidRunner, err)
+			}
+		}
+	}
+	return nil
 }
 
 // Kinds returns a copy of the registered kinds, safe to read while a sync is running.
 func (n *NopManager) Kinds() (r []RunnerDefinition) {
 	n.mtx.Lock()
 	defer n.mtx.Unlock()
-	r = make([]RunnerDefinition, len(n.Available))
-	copy(r, n.Available)
+	r = make([]RunnerDefinition, 0, len(n.Available))
+	for _, rk := range n.Available {
+		r = append(r, rk.RunnerDefinition)
+	}
 	return
 }
 
@@ -161,7 +255,7 @@ func (n *NopManager) KindNames() (r []string) {
 }
 
 // lookupKind finds the registration for a kind.
-func (n *NopManager) lookupKind(kind string) (rd RunnerDefinition, ok bool) {
+func (n *NopManager) lookupKind(kind string) (rk registeredKind, ok bool) {
 	n.mtx.Lock()
 	defer n.mtx.Unlock()
 	return n.lookupKindLocked(kind)
@@ -169,10 +263,10 @@ func (n *NopManager) lookupKind(kind string) (rd RunnerDefinition, ok bool) {
 
 // lookupKindLocked is lookupKind with the lock already held.  The Available list carries
 // at most one entry per kind so the first hit is the only hit.
-func (n *NopManager) lookupKindLocked(kind string) (rd RunnerDefinition, ok bool) {
+func (n *NopManager) lookupKindLocked(kind string) (rk registeredKind, ok bool) {
 	for _, cur := range n.Available {
 		if cur.Kind == kind {
-			rd, ok = cur, true
+			rk, ok = cur, true
 			return
 		}
 	}
@@ -212,7 +306,7 @@ func (n *NopManager) prepareRunnerLocked(name, kind string, guid uuid.UUID, v an
 		return
 	}
 	// the kind has to be one we advertised, we cannot run something we do not know about
-	var def RunnerDefinition
+	var def registeredKind
 	var ok bool
 	if def, ok = n.lookupKindLocked(kind); !ok {
 		err = fmt.Errorf("%w %q", ErrUnknownKind, kind)
@@ -274,6 +368,12 @@ type DynamicConfigManager struct {
 	// pollInterval is how often we ask for our configuration, a field rather than the
 	// constant so that tests do not have to wait on it.
 	pollInterval time.Duration
+
+	// statuses is the verdict on every configuration the webserver has handed us, as of
+	// the last sync.  It is guarded by the embedded NopManager's mutex along with the
+	// lists it is derived from, because it has to be rebuilt in the same critical section
+	// that decides what is on disk or the two can disagree.
+	statuses []RunnerStatus
 }
 
 func NewDynamicConfigManager(ctx context.Context, c Config, guid uuid.UUID, lgr *log.Logger) (m Manager, err error) {

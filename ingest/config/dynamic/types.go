@@ -16,6 +16,8 @@ import (
 	"reflect"
 	"strings"
 	"uuid"
+
+	"github.com/gravwell/gravwell/v4/client/types"
 )
 
 const (
@@ -86,7 +88,71 @@ type RunnerDefinition struct {
 	UUID      uuid.UUID `json:",omitzero"`
 	Singleton bool      // whether more than one of this Kind can run at a time
 	Variables []Variable
-	Assigned  *Assignment `json:",omitempty"` // optional asisgnment for this config, will be empty for empty config prototypes
+	Assigned  *Assignment     `json:",omitempty"`         // optional asisgnment for this config, will be empty for empty config prototypes
+	Metadata  *RunnerMetadata `json:"metadata,omitempty"` // optional metadata for the runner which may contain an icon (svg) and/or documentation links
+}
+
+type DocLink struct {
+	Name string `json:"name,omitempty"`
+	Link string `json:"link,omitempty"`
+}
+
+type RunnerMetadata struct {
+	Icon          string                 `json:"icon,omitempty"`          // optional SVG icon for the ingester
+	Documentation []DocLink              `json:"documentation,omitempty"` // links to integration guides or ingester documentation
+	Version       types.CanonicalVersion `json:"version,omitzero"`        // the plugin's own version, zero when it does not declare one
+}
+
+// MetadataProvider is an OPTIONAL interface a plugin config may implement to describe
+// itself beyond its variables: an icon to draw it with, links to its documentation, and
+// the version of the plugin that is offering it.
+//
+// It hangs off the config type rather than being passed to RegisterKind because the
+// config type is the one thing every path already has in its hands, so a plugin that
+// implements it is described everywhere without anything having to be threaded through.
+// A plugin that does not implement it simply has no metadata, which is why every field of
+// RunnerMetadata is optional.
+//
+// Implement it on the pointer receiver, the way plugin configs implement everything else.
+// MapRunnerDefinition looks for it on both the value and a pointer to it.
+type MetadataProvider interface {
+	RunnerMetadata() *RunnerMetadata
+}
+
+// Version parses a canonical version string such as "1.2.3".
+//
+// A string that does not parse comes back as the zero value, which reports Enabled()
+// false and is rendered as no version at all.  A plugin is not worth refusing to register
+// over a typo in a field that exists to be printed next to its name, so the check for
+// that belongs in a test rather than in a panic at init.
+func Version(s string) (v types.CanonicalVersion) {
+	v, _ = types.ParseCanonicalVersion(s)
+	return
+}
+
+// metadataOf pulls the optional metadata off a plugin config.
+//
+// A config handed in by value cannot satisfy an interface whose methods are on the
+// pointer receiver, and that is the normal way these are written, so a value gets copied
+// somewhere addressable and asked again.  The copy is deliberate: nothing here should be
+// able to hand a plugin a pointer into a caller's config.
+func metadataOf(v any) *RunnerMetadata {
+	if v == nil {
+		return nil
+	}
+	if mp, ok := v.(MetadataProvider); ok {
+		return mp.RunnerMetadata()
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Pointer {
+		return nil // already a pointer, it simply does not implement it
+	}
+	pv := reflect.New(rv.Type())
+	pv.Elem().Set(rv)
+	if mp, ok := pv.Interface().(MetadataProvider); ok {
+		return mp.RunnerMetadata()
+	}
+	return nil
 }
 
 // Variable is a single value in a dynamic configuration, it may be some primative
@@ -456,7 +522,14 @@ func MapRunnerDefinition(kind, name string, v any) (c RunnerDefinition, err erro
 	if vars, err = mapStruct(rv, 0); err != nil {
 		return
 	}
-	c = RunnerDefinition{Kind: kind, Name: name, Variables: make([]Variable, 0, len(vars))}
+	c = RunnerDefinition{
+		Kind:      kind,
+		Name:      name,
+		Variables: make([]Variable, 0, len(vars)),
+		// a plugin that describes itself is described here, so every path that maps a
+		// config carries the icon, the docs and the version without asking for them
+		Metadata: metadataOf(v),
+	}
 	for _, vr := range vars {
 		if err = vr.Validate(); err != nil {
 			err = fmt.Errorf("%s produced an invalid variable: %w", vr.Name, err)

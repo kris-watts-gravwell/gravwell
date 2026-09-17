@@ -484,7 +484,7 @@ func TestNopManagerRegisterKind(t *testing.T) {
 		}
 	}
 	// the secret is described so a GUI can ask for it, it just carries no value
-	if v, ok := findVar(a, `Token`); !ok {
+	if v, ok := findVar(a.RunnerDefinition, `Token`); !ok {
 		t.Error(`the secret should still be described`)
 	} else if v.Value != nil {
 		t.Errorf("the secret carries a value %v", v.Value)

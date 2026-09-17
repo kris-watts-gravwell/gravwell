@@ -33,7 +33,45 @@ const (
 	// configuration without waiting for the next poll.  An ingester that does not
 	// implement it simply gets its changes on the next poll instead.
 	MethodApplyConfig = `applyConfig`
+
+	// MethodReportStatus is called by an ingester to say what became of the
+	// configurations it was handed.  Like MethodRegisterKinds it carries the complete
+	// set, so the server replaces whatever it held for that ingester rather than merging.
+	// That is what makes a runner that has come good actually clear: it reports with no
+	// error rather than having to send a retraction nobody would remember to send.
+	MethodReportStatus = `reportStatus`
 )
+
+// RunnerStatus is one ingester's verdict on one configuration.
+//
+// An empty Error means the ingester rendered the configuration, parsed it back with the
+// same loader it uses at startup, and the plugin's own Verify accepted it.  Anything else
+// is the reason it could not, in the plugin's words, because a config that is well formed
+// on the wire can still be meaningless to the thing that has to run it: an Interval of
+// "3" is a perfectly good string and not a duration.
+//
+// Kind and Name ride along so that a server can name a runner in its interface without
+// having to still hold a definition for it.
+type RunnerStatus struct {
+	UUID  uuid.UUID
+	Kind  string `json:",omitempty"`
+	Name  string `json:",omitempty"`
+	Error string `json:",omitempty"`
+}
+
+// OK reports whether the ingester accepted this configuration.
+func (rs RunnerStatus) OK() bool { return rs.Error == `` }
+
+// ReportStatusRequest is the complete set of verdicts from one ingester.
+//
+// It carries no timestamps on purpose.  The server stamps what it receives with its own
+// clock, because a time from the ingester would be skewed by however wrong that host's
+// clock is, and an operator comparing two ingesters needs one clock rather than two.
+type ReportStatusRequest struct {
+	ID       uuid.UUID
+	Class    string         `json:",omitempty"`
+	Statuses []RunnerStatus `json:",omitempty"`
+}
 
 // RegisterKindsRequest declares what an ingester can run.
 //

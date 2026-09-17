@@ -64,6 +64,7 @@ func (u *UI) Register(mux *http.ServeMux) {
 	mux.HandleFunc(`GET /{$}`, u.index)
 	mux.HandleFunc(`GET /ui/kinds`, u.kinds)
 	mux.HandleFunc(`GET /ui/runners`, u.runners)
+	mux.HandleFunc(`GET /ui/runnerstatus`, u.runnerStatus)
 	mux.HandleFunc(`GET /ui/status`, u.status)
 	mux.HandleFunc(`GET /ui/ingesters`, u.ingesters)
 	mux.HandleFunc(`GET /ui/listrow`, u.listRow)
@@ -71,6 +72,128 @@ func (u *UI) Register(mux *http.ServeMux) {
 	mux.HandleFunc(`GET /ui/edit`, u.editRunner)
 	mux.HandleFunc(`POST /ui/save`, u.save)
 	mux.HandleFunc(`POST /ui/delete`, u.del)
+}
+
+// runnerView is a configured runner as the list draws it: what it is, and what the
+// ingesters carrying it currently make of it.
+type runnerView struct {
+	UUID    string
+	Kind    string
+	Name    string
+	State   string // ok, bad, or unknown
+	Detail  string // the one line an operator reads without opening anything
+	Icon    template.HTML
+	HasIcon bool
+}
+
+// kindView is a registered kind as the menu draws it.
+type kindView struct {
+	Kind      string
+	Vars      int
+	Singleton bool
+	Version   string // empty when the plugin does not declare one
+	Icon      template.HTML
+	HasIcon   bool
+	Docs      []dynamic.DocLink
+}
+
+// iconFor renders a kind's icon, if it has one that survives sanitizing.  The markup is
+// rebuilt from an allow list rather than trusted, see sanitizeIcon: an icon is drawn by
+// whoever wrote the ingester and arrives here over the wire.
+func iconFor(md *dynamic.RunnerMetadata) (template.HTML, bool) {
+	if md == nil {
+		return ``, false
+	}
+	return sanitizeIcon(md.Icon)
+}
+
+// versionOf renders a plugin's version, or nothing when it does not declare one.  A zero
+// version is not "0.0.0", it is an absence, and printing it as a number would be a claim
+// the plugin never made.
+func versionOf(md *dynamic.RunnerMetadata) string {
+	if md == nil || !md.Version.Enabled() {
+		return ``
+	}
+	return md.Version.String()
+}
+
+// statusView is one ingester's report about one runner, as the detail panel draws it.
+type statusView struct {
+	Ingester string
+	Class    string
+	State    string // ok or bad
+	Error    string
+	Since    string
+	Updated  string
+}
+
+// statusStates are the three things the interface can say about a runner, and the order
+// matters: an error outranks everything, and never having been reported on is not the
+// same as being fine.
+const (
+	stateOK      = `ok`
+	stateBad     = `bad`
+	stateUnknown = `unknown`
+)
+
+// rollUp reduces every ingester's report about one runner to the single state and line
+// the list shows.
+//
+// One ingester failing is the whole runner failing.  A configuration that four ingesters
+// accept and a fifth rejects is a broken configuration, and averaging that away is how a
+// green screen ends up lying to somebody.
+func rollUp(rows []StatusRow) (state, detail string) {
+	if len(rows) == 0 {
+		return stateUnknown, `no ingester has reported on this runner`
+	}
+	var bad int
+	var first string
+	for _, r := range rows {
+		if r.OK() {
+			continue
+		}
+		bad++
+		if first == `` {
+			first = r.Error
+		}
+	}
+	if bad == 0 {
+		return stateOK, fmt.Sprintf("accepted by %s", plural(len(rows), `ingester`))
+	}
+	if bad == len(rows) && bad == 1 {
+		return stateBad, first
+	}
+	return stateBad, fmt.Sprintf("%d of %s rejected it: %s", bad, plural(len(rows), `ingester`), first)
+}
+
+// plural renders a count with its noun, so the interface does not say "1 ingesters".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// ago renders a timestamp the way an operator reads one, which is as a distance from now
+// rather than as a wall clock time they then have to subtract in their head.
+func ago(t time.Time) string {
+	if t.IsZero() {
+		return `never`
+	}
+	d := time.Since(t)
+	switch {
+	case d < 0:
+		return `just now` // a clock that stepped backwards, do not print a negative age
+	case d < 2*time.Second:
+		return `just now`
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 }
 
 // formView is what the form template renders from.
@@ -81,6 +204,13 @@ type formView struct {
 	Existing bool
 	Fields   []field
 	Note     *note
+
+	// the kind's own description, so the form says what is being configured rather than
+	// only naming it
+	Icon    template.HTML
+	HasIcon bool
+	Version string
+	Docs    []dynamic.DocLink
 
 	// Targets are the ingesters that registered this kind, the only ones worth pinning a
 	// configuration of it to.  Selected marks the ones this runner is already pinned to.
@@ -134,7 +264,21 @@ func (u *UI) kinds(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
-	u.render(w, `kinds`, kinds)
+	out := make([]kindView, 0, len(kinds))
+	for _, rd := range kinds {
+		kv := kindView{
+			Kind:      rd.Kind,
+			Vars:      len(rd.Variables),
+			Singleton: rd.Singleton,
+			Version:   versionOf(rd.Metadata),
+		}
+		kv.Icon, kv.HasIcon = iconFor(rd.Metadata)
+		if rd.Metadata != nil {
+			kv.Docs = rd.Metadata.Documentation
+		}
+		out = append(out, kv)
+	}
+	u.render(w, `kinds`, out)
 }
 
 func (u *UI) runners(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +287,84 @@ func (u *UI) runners(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
-	u.render(w, `runners`, runners)
+	// one query for every status rather than one per runner, the list is polled
+	statuses, err := u.store.Statuses()
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	byRunner := map[uuid.UUID][]StatusRow{}
+	for _, st := range statuses {
+		byRunner[st.Runner] = append(byRunner[st.Runner], st)
+	}
+	// a configured runner carries no metadata of its own, it was built from a form.  The
+	// icon belongs to its kind, so it is looked up rather than stored twice.
+	meta, err := u.store.KindMetadata()
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	// sanitize each kind's icon once rather than once per runner using it
+	icons := map[string]template.HTML{}
+	for kind, md := range meta {
+		if ic, ok := iconFor(md); ok {
+			icons[kind] = ic
+		}
+	}
+	out := make([]runnerView, 0, len(runners))
+	for _, rd := range runners {
+		state, detail := rollUp(byRunner[rd.UUID])
+		rv := runnerView{
+			UUID:   rd.UUID.String(),
+			Kind:   rd.Kind,
+			Name:   rd.Name,
+			State:  state,
+			Detail: detail,
+		}
+		rv.Icon, rv.HasIcon = icons[rd.Kind], icons[rd.Kind] != ``
+		out = append(out, rv)
+	}
+	u.render(w, `runners`, out)
+}
+
+// runnerStatus draws the detail panel for one runner: every ingester that has reported on
+// it, what it said, and when.  It is its own fragment so that it can refresh on a timer
+// while an operator sits on the form watching a fix take effect.
+func (u *UI) runnerStatus(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.URL.Query().Get(`uuid`))
+	if err != nil {
+		u.fail(w, fmt.Errorf("invalid runner id %w", err))
+		return
+	}
+	rows, err := u.store.RunnerStatuses(id)
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	// the class an ingester authenticated with is worth showing next to its UUID, it is
+	// usually the thing an operator actually recognizes
+	classes := map[uuid.UUID]string{}
+	if known, lerr := u.store.Ingesters(); lerr == nil {
+		for _, ing := range known {
+			classes[ing.UUID] = ing.Class
+		}
+	}
+	out := make([]statusView, 0, len(rows))
+	for _, row := range rows {
+		sv := statusView{
+			Ingester: row.Ingester.String(),
+			Class:    classes[row.Ingester],
+			State:    stateOK,
+			Error:    row.Error,
+			Since:    ago(row.Since),
+			Updated:  ago(row.Updated),
+		}
+		if !row.OK() {
+			sv.State = stateBad
+		}
+		out = append(out, sv)
+	}
+	u.render(w, `runnerstatus`, out)
 }
 
 func (u *UI) status(w http.ResponseWriter, r *http.Request) {
@@ -263,14 +484,16 @@ func (u *UI) newRunner(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
-	u.render(w, `form`, formView{
+	fv := formView{
 		Kind:         proto.Kind,
 		UUID:         uuid.New().String(), // a new runner gets its identity up front
 		Fields:       fieldsFor(proto, nil),
 		Targets:      targets,
 		Classes:      classes,
 		OtherClasses: other,
-	})
+	}
+	u.describe(&fv, proto)
+	u.render(w, `form`, fv)
 }
 
 // editRunner draws a form filled in from a configured runner.
@@ -297,7 +520,7 @@ func (u *UI) editRunner(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
-	u.render(w, `form`, formView{
+	fv := formView{
 		Kind:         cur.Kind,
 		Name:         cur.Name,
 		UUID:         cur.UUID.String(),
@@ -306,7 +529,9 @@ func (u *UI) editRunner(w http.ResponseWriter, r *http.Request) {
 		Targets:      targets,
 		Classes:      classes,
 		OtherClasses: other,
-	})
+	}
+	u.describe(&fv, proto)
+	u.render(w, `form`, fv)
 }
 
 // save creates or updates a runner and pushes it to whatever is connected.
@@ -388,7 +613,7 @@ func (u *UI) save(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set(`X-Refresh`, refreshLists)
-	u.render(w, `form`, formView{
+	fv := formView{
 		Kind:         rd.Kind,
 		Name:         rd.Name,
 		UUID:         rd.UUID.String(),
@@ -398,7 +623,20 @@ func (u *UI) save(w http.ResponseWriter, r *http.Request) {
 		Classes:      classes,
 		OtherClasses: other,
 		Note:         n,
-	})
+	}
+	u.describe(&fv, proto)
+	u.render(w, `form`, fv)
+}
+
+// describe fills in the part of a form that comes from the kind rather than from the
+// runner: its icon, its version and where to read about it.  The prototype is the only
+// thing carrying that, a configured runner was built from a form and has none of it.
+func (u *UI) describe(fv *formView, proto dynamic.RunnerDefinition) {
+	fv.Icon, fv.HasIcon = iconFor(proto.Metadata)
+	fv.Version = versionOf(proto.Metadata)
+	if proto.Metadata != nil {
+		fv.Docs = proto.Metadata.Documentation
+	}
 }
 
 // parseAssignment builds the assignment from the two pickers plus the free text box.

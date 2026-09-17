@@ -167,3 +167,56 @@ input[type=text]:focus, input[type=number]:focus, textarea:focus, select:focus {
 	outline: none; border-color: var(--accent);
 	box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
+
+/* runner status.  The three states use the same palette as the rest of the page so they
+   follow the light and dark themes rather than pinning their own colors. */
+.dot.ok { background: var(--ok); }
+.dot.bad { background: var(--bad); }
+.dot.unknown { background: var(--muted); }
+.row .nm .dot { margin-right: .4rem; vertical-align: baseline; }
+.row .sub.ok { color: var(--ok); }
+.row .sub.bad { color: var(--bad); }
+.row .sub.unknown { color: var(--muted); }
+.errtext {
+	color: var(--bad);
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: .82rem;
+	white-space: pre-wrap;
+	word-break: break-word;
+	padding-bottom: .5rem;
+}
+
+/* plugin metadata: the icon a plugin ships, its version, and its documentation links.
+   The icon is sized here rather than by whoever drew it, sanitizeIcon strips the width
+   and height it arrived with so that one oversized icon cannot wreck a list. */
+.icon {
+	width: 1.05rem; height: 1.05rem;
+	flex: 0 0 auto;
+	margin-right: .45rem;
+	vertical-align: -.15rem;
+	color: var(--accent);
+}
+.row .nm { display: flex; align-items: center; gap: 0; }
+.ver {
+	margin-left: .45rem; padding: 0 .35rem;
+	border: 1px solid var(--line); border-radius: 4px;
+	font-size: .72rem; font-weight: 500; color: var(--muted);
+}
+.sub.docs { display: flex; gap: .6rem; }
+.sub.docs a, .kindhead .docs a { color: var(--accent); text-decoration: none; }
+.sub.docs a:hover, .kindhead .docs a:hover { text-decoration: underline; }
+.kindhead {
+	display: flex; align-items: center; gap: 0;
+	margin-bottom: .8rem; padding-bottom: .6rem;
+	border-bottom: 1px solid var(--line);
+}
+.kindhead .icon { width: 1.4rem; height: 1.4rem; margin-right: .55rem; }
+.kindhead .kindname { font-weight: 600; font-size: 1.02rem; }
+.kindhead .docs { margin-left: auto; display: flex; gap: .7rem; font-size: .82rem; }
+
+/* the ingester glyph in the connection dropdown.  It sits inside a mono cell, so the
+   alignment is set here rather than inherited from a run of monospace digits. */
+.idcell { display: flex; align-items: center; gap: .4rem; }
+.idcell .icon { margin-right: 0; vertical-align: baseline; }
+.icon.ing.on { color: var(--ok); }
+.icon.ing.off { color: var(--muted); }

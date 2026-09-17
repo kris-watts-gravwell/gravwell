@@ -85,7 +85,9 @@ func (c *Config) Verify() error {
 		return err
 	}
 
-	return nil
+	// last, so the tags checked are the ones this config will really write to, which for
+	// a prefixed multi API config is one resolved tag per API rather than the prefix
+	return hosted.VerifyTags(c)
 }
 
 func (c *Config) Tags() (tags []string) {

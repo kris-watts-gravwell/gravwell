@@ -106,7 +106,12 @@ func (c *Config) Verify() error {
 
 	c.PollingConfig.ApplyDefaults(defaultLookback, defaultRequestsPerMinute, defaultInterval)
 
-	return nil
+	if err := c.BaseConfig.Verify(); err != nil {
+		return err
+	}
+
+	// last, so the tags checked are the ones this config will really write to
+	return hosted.VerifyTags(c)
 }
 
 func (c *Config) Tags() []string {

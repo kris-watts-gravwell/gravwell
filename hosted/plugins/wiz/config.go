@@ -130,7 +130,9 @@ func (c *Config) Verify() error {
 	if err := c.parseQueryOverrides(); err != nil {
 		return err
 	}
-	return nil
+	// the two checks above already cover Tag-Name and each override, this is the same
+	// rule applied from one place so a tag added here later is covered by default
+	return hosted.VerifyTags(c)
 }
 
 func (c *Config) verifyEndpoint() error {

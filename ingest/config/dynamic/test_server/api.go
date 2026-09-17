@@ -29,6 +29,7 @@ const (
 	MethodRegisterKinds = dynamic.MethodRegisterKinds
 	MethodListRunners   = dynamic.MethodListRunners
 	MethodApplyConfig   = dynamic.MethodApplyConfig
+	MethodReportStatus  = dynamic.MethodReportStatus
 )
 
 // pushTimeout bounds a call down to an ingester.  A wedged ingester must not hold an HTTP
@@ -64,7 +65,10 @@ func (a *API) Mux() (m *rpc.Mux, err error) {
 	if err = m.Register(MethodRegisterKinds, a.registerKinds); err != nil {
 		return
 	}
-	err = m.Register(MethodListRunners, a.listRunners)
+	if err = m.Register(MethodListRunners, a.listRunners); err != nil {
+		return
+	}
+	err = m.Register(MethodReportStatus, a.reportStatus)
 	return
 }
 
@@ -159,6 +163,39 @@ func (a *API) listRunners(ctx context.Context, params json.RawMessage) (any, err
 	a.lgr.Info("listed runners", log.KV("ingester", q.ID), log.KV("class", q.Class),
 		log.KV("kinds", len(q.Kinds)), log.KV("matched", len(set.Runners)))
 	return set, nil
+}
+
+// reportStatus records what an ingester makes of the configurations it was handed.
+//
+// The identity comes from the session rather than the body, for the same reason
+// registerKinds takes it from there: otherwise any authenticated ingester could plant a
+// failure against another one's name, or clear a real one.
+//
+// The report is the complete set for that ingester, so it replaces rather than merges,
+// which is what lets a runner that has come good clear itself.
+func (a *API) reportStatus(ctx context.Context, params json.RawMessage) (any, error) {
+	id, ok := sessionID(ctx)
+	if !ok {
+		return nil, fmt.Errorf("no session identity")
+	}
+	var req dynamic.ReportStatusRequest
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, fmt.Errorf("bad status report %w", err)
+		}
+	}
+	if err := a.store.ReplaceStatuses(id, req.Statuses); err != nil {
+		return nil, err
+	}
+	var bad int
+	for _, rs := range req.Statuses {
+		if !rs.OK() {
+			bad++
+		}
+	}
+	a.lgr.Info("recorded runner status", log.KV("ingester", id),
+		log.KV("reported", len(req.Statuses)), log.KV("failing", bad))
+	return map[string]any{`ok`: true}, nil
 }
 
 // push sends a configuration down to the connected ingesters it is actually meant for,
