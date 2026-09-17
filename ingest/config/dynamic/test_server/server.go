@@ -25,15 +25,19 @@ var authRateWindow = 100 * time.Millisecond
 
 // NewServer wires the RPC route and the web interface onto one handler.  It is built
 // separately from main so that the tests can stand the whole thing up in process.
-func NewServer(store *Store, secret string, lgr *log.Logger) (h http.Handler, err error) {
+// The API is handed back alongside the handler because it is the server side of the
+// protocol, and the parts of it that matter most, pushing a configuration to the
+// ingesters it is meant for, are reachable only from inside.  A caller that only wants to
+// serve can ignore it.
+func NewServer(store *Store, secret string, lgr *log.Logger) (h http.Handler, api *API, err error) {
 	if lgr == nil {
 		lgr = log.NewDiscardLogger()
 	}
-	api := NewAPI(store, lgr)
+	api = NewAPI(store, lgr)
 
 	var mux *rpc.Mux
 	if mux, err = api.Mux(); err != nil {
-		return nil, fmt.Errorf("failed to build the RPC method set %w", err)
+		return nil, nil, fmt.Errorf("failed to build the RPC method set %w", err)
 	}
 	var rsrv *rpc.Server
 	if rsrv, err = rpc.NewServer(rpc.ServerConfig{
@@ -49,18 +53,18 @@ func NewServer(store *Store, secret string, lgr *log.Logger) (h http.Handler, er
 		// behind a tunnel or a reverse proxy on a dev box
 		TrustedProxies: []string{`127.0.0.0/8`, `::1`},
 	}); err != nil {
-		return nil, fmt.Errorf("failed to build the RPC server %w", err)
+		return nil, nil, fmt.Errorf("failed to build the RPC server %w", err)
 	}
 
 	ui, err := NewUI(api, store, lgr)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	smux := http.NewServeMux()
 	smux.Handle(RPCPath, rsrv)
 	ui.Register(smux)
-	return smux, nil
+	return smux, api, nil
 }
 
 // contextWithTimeout is a tiny helper so main does not have to import context.

@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -214,20 +215,51 @@ func (a *API) push(rd dynamic.RunnerDefinition) (delivered int, errs []string) {
 	if len(sessions) == 0 {
 		return
 	}
-	ctx, cf := context.WithTimeout(context.Background(), pushTimeout)
-	defer cf()
+	targets := make([]*rpc.Session, 0, len(sessions))
 	for _, s := range sessions {
-		if !a.targeted(s, rd) {
-			continue
+		if a.targeted(s, rd) {
+			targets = append(targets, s)
 		}
-		if err := s.Call(ctx, dynamic.MethodApplyConfig, rd, nil); err != nil {
-			a.lgr.Error("failed to push config", log.KV("id", s.ID()),
-				log.KV("kind", rd.Kind), log.KV("name", rd.Name), log.KVErr(err))
-			errs = append(errs, fmt.Sprintf("%v: %v", s.ID(), err))
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	// Each ingester gets its own deadline and its own goroutine.  Sharing one timeout
+	// across the loop meant the budget was spent rather than applied: with enough
+	// ingesters the ones at the back were reported as having refused a configuration they
+	// were never actually asked about, and one slow ingester was enough to do it.  Running
+	// them together also keeps the handler that is waiting on this from being held open
+	// for the sum of every ingester's timeout.
+	type outcome struct {
+		id  uuid.UUID
+		err error
+	}
+	results := make(chan outcome, len(targets))
+	var wg sync.WaitGroup
+	for _, s := range targets {
+		wg.Add(1)
+		go func(s *rpc.Session) {
+			defer wg.Done()
+			ctx, cf := context.WithTimeout(context.Background(), pushTimeout)
+			defer cf()
+			results <- outcome{id: s.ID(), err: s.Call(ctx, dynamic.MethodApplyConfig, rd, nil)}
+		}(s)
+	}
+	wg.Wait()
+	close(results)
+
+	for res := range results {
+		if res.err != nil {
+			a.lgr.Error("failed to push config", log.KV("id", res.id),
+				log.KV("kind", rd.Kind), log.KV("name", rd.Name), log.KVErr(res.err))
+			errs = append(errs, fmt.Sprintf("%v: %v", res.id, res.err))
 			continue
 		}
 		delivered++
 	}
+	// the map iteration behind Connected has no order, so give the operator a stable one
+	sort.Strings(errs)
 	return
 }
 

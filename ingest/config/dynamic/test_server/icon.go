@@ -9,10 +9,14 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/xml"
+	"fmt"
 	"html"
 	"html/template"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -47,6 +51,12 @@ var iconElements = map[string]bool{
 	`svg`: true, `g`: true, `title`: true, `desc`: true,
 	`path`: true, `circle`: true, `ellipse`: true, `line`: true,
 	`polyline`: true, `polygon`: true, `rect`: true,
+	// paint servers.  A brand mark is usually a gradient over a shape, and without these
+	// the shape survives while the paint it points at does not, which renders as nothing
+	// at all rather than as a plain colour.  None of them can reference another document:
+	// the one attribute that would, xlink:href, is namespaced and dropped with every
+	// other namespaced attribute.
+	`defs`: true, `lineargradient`: true, `radialgradient`: true, `stop`: true,
 }
 
 // iconAttrs is every attribute that may appear: geometry and presentation, nothing that
@@ -57,16 +67,87 @@ var iconAttrs = map[string]bool{
 	`viewbox`: true, `transform`: true, `d`: true, `points`: true,
 	`x`: true, `y`: true, `x1`: true, `y1`: true, `x2`: true, `y2`: true,
 	`cx`: true, `cy`: true, `r`: true, `rx`: true, `ry`: true,
-	`width`: true, `height`: true,
-	`fill`: true, `fill-opacity`: true, `fill-rule`: true, `clip-rule`: true,
+	`fx`: true, `fy`: true, `width`: true, `height`: true,
+	`preserveaspectratio`: true,
+	`fill`:                true, `fill-opacity`: true, `fill-rule`: true, `clip-rule`: true,
 	`stroke`: true, `stroke-width`: true, `stroke-linecap`: true,
 	`stroke-linejoin`: true, `stroke-dasharray`: true, `stroke-opacity`: true,
 	`stroke-miterlimit`: true, `opacity`: true, `vector-effect`: true,
+	// gradients
+	`id`: true, `offset`: true, `stop-color`: true, `stop-opacity`: true,
+	`gradientunits`: true, `gradienttransform`: true, `spreadmethod`: true,
 }
 
 // rootOnlyAttrs are the attributes only the outermost <svg> may carry.  width and height
 // are dropped everywhere else too, see sanitizeIcon.
-var rootOnlyAttrs = map[string]bool{`viewbox`: true}
+var rootOnlyAttrs = map[string]bool{`viewbox`: true, `preserveaspectratio`: true}
+
+// paintAttrs are the attributes whose value may name a paint server rather than a colour.
+// They are the only place a url() reference is allowed, and even there only a local one.
+var paintAttrs = map[string]bool{`fill`: true, `stroke`: true, `stop-color`: true}
+
+// idPattern is what an id has to look like to be kept.  Anything outside this cannot be
+// referenced by the url(#id) syntax anyway, and keeping the set narrow means the rewriting
+// below never has to think about escaping.
+var idPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.:-]*$`)
+
+// localRef matches a reference to a paint server in the same document, which is the only
+// kind allowed: url(#name), with optional whitespace and quoting.
+var localRef = regexp.MustCompile(`^url\(\s*['"]?#([A-Za-z][A-Za-z0-9_.:-]*)['"]?\s*\)$`)
+
+// canonicalNames restores the spelling of the SVG names that are camel case.
+//
+// Everything here is matched in lower case, because that is the only way to compare names
+// without caring how the source wrote them, but SVG itself is case sensitive: an element
+// written out as "lineargradient" is not a gradient.  An HTML parser happens to repair
+// these when it adopts foreign content, so the mistake renders anyway and would sit here
+// unnoticed until the same markup was put somewhere that parses it as XML.
+var canonicalNames = map[string]string{
+	`lineargradient`:      `linearGradient`,
+	`radialgradient`:      `radialGradient`,
+	`gradientunits`:       `gradientUnits`,
+	`gradienttransform`:   `gradientTransform`,
+	`spreadmethod`:        `spreadMethod`,
+	`preserveaspectratio`: `preserveAspectRatio`,
+	`viewbox`:             `viewBox`,
+}
+
+// canonical returns the spelling to emit for a lower cased name.
+func canonical(name string) string {
+	if c, ok := canonicalNames[name]; ok {
+		return c
+	}
+	return name
+}
+
+// sizeValue reads a width or height off the root element.  SVG allows a unit suffix and a
+// bare number means user units, which is what a viewBox is measured in.
+func sizeValue(v string) (float64, bool) {
+	v = strings.TrimSpace(v)
+	v = strings.TrimSuffix(v, `px`)
+	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil || f <= 0 {
+		return 0, false
+	}
+	return f, true
+}
+
+// iconPrefix derives the namespace an icon's ids are rewritten into.
+//
+// Ids have to survive now that gradients do, and a plugin's ids are its own business: two
+// different plugins drawn on the same page will both have been exported by the same tool
+// and will both call their gradient "linearGradient-1".  Left alone, the second icon
+// would paint itself with the first one's gradient.
+//
+// The prefix comes from the icon's own bytes rather than from a counter, so the same icon
+// always sanitizes to the same markup: a fragment that is rendered twice on a page is
+// byte for byte the same both times, and only genuinely different icons get different
+// ids.  Two copies of one icon do repeat an id, which no browser minds because the thing
+// being referenced is identical.
+func iconPrefix(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("i%x-", sum[:4])
+}
 
 // sanitizeIcon rebuilds a plugin supplied SVG from the allow lists above.
 //
@@ -82,6 +163,7 @@ func sanitizeIcon(raw string) (template.HTML, bool) {
 	if strings.TrimSpace(raw) == `` || len(raw) > maxIconBytes {
 		return ``, false
 	}
+	prefix := iconPrefix(raw)
 	dec := xml.NewDecoder(strings.NewReader(raw))
 	// an entity a plugin invented is not something to go and resolve, and a reference to
 	// an external one is a way out of this process
@@ -114,16 +196,19 @@ func sanitizeIcon(raw string) (template.HTML, bool) {
 					return ``, false // not an icon at all
 				}
 				sb.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" class="icon" aria-hidden="true" focusable="false"`)
-				writeIconAttrs(&sb, t.Attr, true)
+				writeIconAttrs(&sb, t.Attr, true, prefix)
 				sb.WriteString(`>`)
 				depth++
 				continue
 			}
-			if name != `title` && name != `desc` && name != `g` {
+			switch name {
+			case `title`, `desc`, `g`, `defs`, `lineargradient`, `radialgradient`, `stop`:
+				// structure and paint, not something that draws on its own
+			default:
 				shapes++
 			}
-			sb.WriteString(`<` + name)
-			writeIconAttrs(&sb, t.Attr, false)
+			sb.WriteString(`<` + canonical(name))
+			writeIconAttrs(&sb, t.Attr, false, prefix)
 			sb.WriteString(`>`)
 			depth++
 		case xml.EndElement:
@@ -135,7 +220,7 @@ func sanitizeIcon(raw string) (template.HTML, bool) {
 				continue
 			}
 			depth--
-			sb.WriteString(`</` + strings.ToLower(t.Name.Local) + `>`)
+			sb.WriteString(`</` + canonical(strings.ToLower(t.Name.Local)) + `>`)
 		case xml.CharData:
 			// text only survives inside a title or desc, and only as escaped text.
 			// Everything else in an icon is attributes.
@@ -157,8 +242,10 @@ func sanitizeIcon(raw string) (template.HTML, bool) {
 // xlink:href and the provenance namespaces, and none of them belong in an icon.  The root
 // keeps its viewBox but loses width and height so the stylesheet sizes it; a child keeps
 // width and height because that is geometry on a <rect>.
-func writeIconAttrs(sb *strings.Builder, attrs []xml.Attr, root bool) {
+func writeIconAttrs(sb *strings.Builder, attrs []xml.Attr, root bool, prefix string) {
 	var sawViewBox bool
+	var w, h float64
+	var haveW, haveH bool
 	for _, a := range attrs {
 		if a.Name.Space != `` {
 			continue
@@ -170,9 +257,34 @@ func writeIconAttrs(sb *strings.Builder, attrs []xml.Attr, root bool) {
 		if !iconAttrs[name] {
 			continue
 		}
+		// an id is kept so a gradient can be pointed at, but namespaced first, see
+		// iconPrefix.  One that could never be referenced is dropped rather than escaped.
+		if name == `id` {
+			if idPattern.MatchString(a.Value) {
+				sb.WriteString(` id="` + prefix + a.Value + `"`)
+			}
+			continue
+		}
+		// a paint may name a paint server, and that is the one place a url() is allowed.
+		// Only a reference into this same icon: anything else, in particular a url()
+		// pointing at another origin, is dropped rather than followed.
+		if paintAttrs[name] && strings.Contains(a.Value, `url(`) {
+			if m := localRef.FindStringSubmatch(strings.TrimSpace(a.Value)); m != nil {
+				sb.WriteString(` ` + canonical(name) + `="url(#` + prefix + m[1] + `)"`)
+			}
+			continue
+		}
 		if root {
-			if name == `width` || name == `height` {
-				continue // the stylesheet decides, not the plugin
+			// the stylesheet decides how big an icon is, not the plugin.  The numbers
+			// are still worth reading: an icon with no viewBox is drawn in the
+			// coordinate space these describe, and dropping them without recording it
+			// would leave nothing to say how far the drawing extends.
+			if name == `width` {
+				w, haveW = sizeValue(a.Value)
+				continue
+			} else if name == `height` {
+				h, haveH = sizeValue(a.Value)
+				continue
 			}
 		} else if rootOnlyAttrs[name] {
 			continue
@@ -185,9 +297,24 @@ func writeIconAttrs(sb *strings.Builder, attrs []xml.Attr, root bool) {
 			sb.WriteString(` viewBox="` + html.EscapeString(a.Value) + `"`)
 			continue
 		}
-		sb.WriteString(` ` + name + `="` + html.EscapeString(a.Value) + `"`)
+		sb.WriteString(` ` + canonical(name) + `="` + html.EscapeString(a.Value) + `"`)
 	}
 	if root && !sawViewBox {
-		sb.WriteString(` viewBox="` + iconViewBox + `"`)
+		// No viewBox, so the drawing has no declared coordinate space and the size it was
+		// authored at is the only thing that says how far it extends.  Guessing a square
+		// instead would crop every icon that was not drawn at exactly that size to its
+		// top left corner, which is a far worse failure than an icon that is the wrong
+		// shape: it looks like a rendering bug rather than a missing attribute.
+		switch {
+		case haveW && haveH:
+			sb.WriteString(fmt.Sprintf(` viewBox="0 0 %s %s"`, trimNum(w), trimNum(h)))
+		default:
+			sb.WriteString(` viewBox="` + iconViewBox + `"`)
+		}
 	}
+}
+
+// trimNum renders a dimension without a trailing run of zeroes.
+func trimNum(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }

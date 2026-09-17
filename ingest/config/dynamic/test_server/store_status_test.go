@@ -202,3 +202,61 @@ func TestRollUp(t *testing.T) {
 		t.Errorf("the mixed summary does not say who or why: %q", detail)
 	}
 }
+
+// TestDeleteRunnerIsAtomic covers the pairing that has to hold: once the runner is gone
+// no ingester will ever mention it again, so a status left behind can never be cleared by
+// anything.  The two deletes therefore have to happen together or not at all.
+func TestDeleteRunnerIsAtomic(t *testing.T) {
+	s := newStore(t)
+	ingester := uuid.New()
+	live, other := uuid.New(), uuid.New()
+
+	put := func(id uuid.UUID, name string) {
+		t.Helper()
+		rd, err := dynamic.MapRunnerDefinition(`Tester`, name, struct {
+			Ingester_UUID string
+			Interval      string
+		}{Ingester_UUID: id.String(), Interval: `1s`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rd.UUID = id
+		if err = s.PutRunner(rd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(live, `live`)
+	put(other, `other`)
+	if err := s.ReplaceStatuses(ingester, []dynamic.RunnerStatus{
+		{UUID: live, Kind: `Tester`, Name: `live`, Error: `boom`},
+		{UUID: other, Kind: `Tester`, Name: `other`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// deleting a runner that is not there must change nothing at all, not even partially
+	if err := s.DeleteRunner(uuid.New()); err == nil {
+		t.Error(`deleting an absent runner reported success`)
+	}
+	if rows, _ := s.RunnerStatuses(live); len(rows) != 1 {
+		t.Errorf("a failed delete disturbed another runner's statuses: %d rows", len(rows))
+	}
+	if runners, _ := s.Runners(); len(runners) != 2 {
+		t.Errorf("a failed delete removed a runner: %d left", len(runners))
+	}
+
+	// and a real delete takes the statuses with it, leaving the other one alone
+	if err := s.DeleteRunner(live); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := s.RunnerStatuses(live); err != nil {
+		t.Fatal(err)
+	} else if len(rows) != 0 {
+		t.Errorf("the deleted runner kept %d statuses, which nothing can ever clear", len(rows))
+	}
+	if rows, err := s.RunnerStatuses(other); err != nil {
+		t.Fatal(err)
+	} else if len(rows) != 1 {
+		t.Errorf("deleting one runner took another's statuses: %d rows", len(rows))
+	}
+}

@@ -814,15 +814,37 @@ func (c RunnerDefinition) INI() (r string, err error) {
 	if c.UUID != uuid.Nil() {
 		fmt.Fprintf(&sb, "\tIngester-UUID=%s\n", c.UUID)
 	}
+	// the flat members first, then the nested ones, because gcfg reads keys as belonging
+	// to the section they follow: a subsection opened partway down would swallow every
+	// key written after it
 	var todo []Variable
 	for _, v := range c.Variables {
-		// throw the complex variables on the end to do last
 		if v.Type.Complex() {
-			todo = append(todo, v)
+			// only one that was actually filled in has anything to write.  A nested
+			// member the operator left alone is described but unset, exactly like every
+			// other unset member, and refusing the whole configuration over it would make
+			// any plugin that merely declares an optional one impossible to configure.
+			if v.Value != nil {
+				todo = append(todo, v)
+			}
 			continue
 		} else if err = v.emitIniLine(&sb, "\t"); err != nil {
 			return
 		}
+	}
+	// A nested member that was filled in cannot be written yet, and saying so is the whole
+	// point: this used to collect them and then return the block without them, so a
+	// configuration went to disk missing entire sections and nothing anywhere reported a
+	// problem.  A value that cannot be represented is refused, which is what every other
+	// unrepresentable value here already does.
+	if len(todo) > 0 {
+		names := make([]string, 0, len(todo))
+		for _, v := range todo {
+			names = append(names, v.Name)
+		}
+		err = fmt.Errorf("%w: %s cannot be written to a config file yet, nested members are unsupported",
+			ErrUnrepresentable, strings.Join(names, `, `))
+		return
 	}
 	r = sb.String()
 	return

@@ -41,6 +41,11 @@ func newManager(t *testing.T, h *harness, id uuid.UUID, class string) (dynamic.M
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.Close() })
+	// the constructor builds the manager, Start runs it.  They are deliberately separate,
+	// so a test that forgets this one sits there connecting to nothing.
+	if err = m.Start(); err != nil {
+		t.Fatal(err)
+	}
 	return m, storage
 }
 
@@ -304,6 +309,11 @@ func TestManagerBacksOffWhenTheServerIsDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an unreachable webserver should not stop the manager from starting: %v", err)
 	}
+	// started, so the backoff loop is actually running.  Without this the test would pass
+	// by virtue of nothing happening at all, which proves nothing.
+	if err = m.Start(); err != nil {
+		t.Fatal(err)
+	}
 	// it must keep working locally regardless
 	if err = m.RegisterKind(`testplugin`, false, pluginConfig{}); err != nil {
 		t.Errorf("registration should work offline: %v", err)
@@ -341,6 +351,11 @@ func TestManagerRejectsBadToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer m.Close()
+	// started, so the handshake is really attempted and really refused: an unstarted
+	// manager writes nothing either, and would pass this test for the wrong reason
+	if err = m.Start(); err != nil {
+		t.Fatal(err)
+	}
 	if err = m.RegisterKind(`testplugin`, false, pluginConfig{}); err != nil {
 		t.Fatal(err)
 	}

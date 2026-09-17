@@ -9,8 +9,12 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"uuid"
 
@@ -322,13 +326,52 @@ func TestDynamicLoadIntoRunnerConfig(t *testing.T) {
 		}
 	}
 
+	// every kind rendered to a file, which is the plumbing this is really about
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != len(kinds) {
+		t.Fatalf("wrote %d configs for %d kinds", len(ents), len(kinds))
+	}
+
 	// the shape the reload path uses, a *cfgType, every dynamic config has to land in it
 	newCfg := &cfgType{}
 	if err = dm.Load(newCfg); err != nil {
 		t.Fatalf("the reload path cannot load dynamic configs: %v", err)
 	}
-	if got, want := newCfg.IngesterCount(), len(kinds); got != want {
-		t.Errorf("reload picked up %d ingesters, want %d", got, want)
+
+	// but only the ones that could actually run.  These were registered from zero valued
+	// prototypes, and a plugin config with no credentials in it is not a configuration
+	// anything can run: Okta has no domain or token, SQS has no queue. Load checks each
+	// one against the plugin that would have to run it and skips the ones it refuses,
+	// which is the whole reason a bad configuration no longer stops the runner starting.
+	// Tester is the only plugin whose zero value is runnable, so it is the only one here
+	// that should land.
+	if newCfg.Configs.Tester[`prod`] == nil {
+		t.Error(`the one runnable configuration was not loaded`)
+	}
+	if got := newCfg.IngesterCount(); got != 1 {
+		t.Errorf("reload picked up %d ingesters, want 1: %d of these prototypes are not runnable", got, len(kinds)-1)
+	}
+
+	// and the rest are reported rather than silently dropped, so an operator finds out
+	// why a runner they configured is not running
+	reported := map[string]string{}
+	if sr, ok := dm.(interface{ Statuses() []dynamic.RunnerStatus }); ok {
+		for _, rs := range sr.Statuses() {
+			if !rs.OK() {
+				reported[rs.Kind] = rs.Error
+			}
+		}
+	}
+	if len(reported) != len(kinds)-1 {
+		t.Errorf("reported %d unusable configurations, want %d: %v", len(reported), len(kinds)-1, reported)
+	}
+	for kind, msg := range reported {
+		if msg == `` {
+			t.Errorf("%s was reported with no reason", kind)
+		}
 	}
 
 	// a pointer to that pointer is not a struct and must be refused rather than quietly
@@ -336,4 +379,107 @@ func TestDynamicLoadIntoRunnerConfig(t *testing.T) {
 	if err = dm.Load(&newCfg); err == nil {
 		t.Error(`Load should reject a **cfgType`)
 	}
+}
+
+// TestDynamicLoadSkipsABadTagAndKeepsGoing is the runner's own version of the case that
+// stopped it starting: a dynamic configuration carrying a tag the indexer will refuse.
+//
+// It uses the real cfgType and the real tester plugin, because the failure was in the
+// seam between them: the file parses into cfgType happily, and only tester's Verify knows
+// the tag is unusable. Loading it meant cfg.Tags() blew up later, during muxer setup,
+// where nothing ties the failure back to the configuration that caused it and the
+// ingester is already on its way down.
+func TestDynamicLoadSkipsABadTagAndKeepsGoing(t *testing.T) {
+	dir := t.TempDir()
+	dm, err := dynamic.NewDynamicConfigManager(nil, dynamic.Config{
+		Webserver:  []string{`127.0.0.1:1`}, // nothing there, this is about the load
+		Auth_Token: `token`,
+		Storage:    dir,
+	}, uuid.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dm.Close()
+	// registered before loading, the way main does it, so the report can name the runner
+	if err = registerDynamicPluginTypes(dm); err != nil {
+		t.Fatal(err)
+	}
+
+	write := func(name, tag string) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		body := "[Tester \"" + name + "\"]\n\tIngester-UUID=" + id.String() +
+			"\n\tTag-Name=`" + tag + "`\n\tInterval=`10s`\n"
+		if werr := os.WriteFile(filepath.Join(dir, `Tester_`+name+`_`+id.String()+`.conf`),
+			[]byte(body), 0660); werr != nil {
+			t.Fatal(werr)
+		}
+		return id
+	}
+	goodID := write(`works`, `things`)
+	badID := write(`willfail`, `30984r09saokdj;lksaj;lk ;alsdkj f#)(*)!(@*`)
+
+	cfg := &cfgType{}
+	if err = dm.Load(cfg); err != nil {
+		t.Fatalf("one unusable dynamic configuration stopped the runner loading: %v", err)
+	}
+
+	// the good one is configured and the bad one is not there at all
+	if cfg.Configs.Tester[`works`] == nil {
+		t.Fatal(`the usable configuration was not loaded`)
+	}
+	if cfg.Configs.Tester[`willfail`] != nil {
+		t.Errorf("the unusable configuration was loaded: %+v", cfg.Configs.Tester[`willfail`])
+	}
+	if got := cfg.IngesterCount(); got != 1 {
+		t.Errorf("configured %d ingesters, want 1", got)
+	}
+
+	// and this is what actually killed startup: collecting the tags across everything
+	// configured has to succeed now that the bad one never made it in
+	tags, err := cfg.Configs.Tags()
+	if err != nil {
+		t.Fatalf("collecting tags still fails, which is what stopped the runner: %v", err)
+	}
+	if !slices.Contains(tags, `things`) {
+		t.Errorf("tags %v do not include the good runner's", tags)
+	}
+
+	// the failure is reported upstream, named, and attributed to the right runner
+	var found bool
+	for _, rs := range dm.(interface{ Statuses() []dynamic.RunnerStatus }).Statuses() {
+		if rs.UUID != badID {
+			continue
+		}
+		found = true
+		if rs.OK() {
+			t.Errorf("the unusable configuration reported clean: %+v", rs)
+		}
+		if rs.Kind != `Tester` || rs.Name != `willfail` {
+			t.Errorf("the report does not name the runner: %+v", rs)
+		}
+		if !strings.Contains(rs.Error, `Forbidden character in tag`) {
+			t.Errorf("the report does not carry the reason: %q", rs.Error)
+		}
+	}
+	if !found {
+		t.Error(`the unusable configuration was not reported upstream at all`)
+	}
+	if st, ok := statusOf(dm, goodID); ok && !st.OK() {
+		t.Errorf("the good configuration was reported as failing: %+v", st)
+	}
+}
+
+// statusOf finds what the manager reports about one runner.
+func statusOf(dm dynamic.Manager, id uuid.UUID) (dynamic.RunnerStatus, bool) {
+	sr, ok := dm.(interface{ Statuses() []dynamic.RunnerStatus })
+	if !ok {
+		return dynamic.RunnerStatus{}, false
+	}
+	for _, rs := range sr.Statuses() {
+		if rs.UUID == id {
+			return rs, true
+		}
+	}
+	return dynamic.RunnerStatus{}, false
 }

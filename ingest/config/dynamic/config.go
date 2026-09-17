@@ -23,6 +23,11 @@ const (
 
 	// storageMode is the permission set applied when we have to create the storage directory.
 	storageMode = 0770
+
+	// confExt is the extension the overlay loader consumes.  It is spelled out here
+	// rather than borrowed from ingest/config, which keeps its own copy unexported, and a
+	// disagreement between the two would mean writing files that nothing ever reads.
+	confExt = `.conf`
 )
 
 // Config type manages the static config for dynamic ingesters which specifies
@@ -134,8 +139,15 @@ func (c *Config) Verify() (err error) {
 	return
 }
 
+// Enabled reports whether anything in this block was set.
+//
+// Every member counts, Poll_Interval included.  A member left out of this check is one
+// somebody can set on its own and have silently ignored: the block reads as disabled,
+// Verify returns without looking at it, and the ingester starts with no dynamic
+// configuration and no complaint about the half filled in section meant to turn it on.
 func (c Config) Enabled() bool {
-	if len(c.Webserver) == 0 && c.Auth_Token == `` && c.Storage == `` && c.Class == `` {
+	if len(c.Webserver) == 0 && c.Auth_Token == `` && c.Storage == `` &&
+		c.Class == `` && c.Poll_Interval == `` {
 		return false
 	}
 	return true // SOMETHING was enabled, so run validate

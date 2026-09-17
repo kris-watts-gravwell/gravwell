@@ -64,7 +64,12 @@ type ClientConfig struct {
 	Logger *log.Logger
 
 	// DialTimeout, HandshakeTimeout, PingInterval, MaxPayloadBytes and MaxInflight are
-	// all optional and have sane defaults.  A zero PingInterval disables the keepalive.
+	// all optional and have sane defaults.
+	//
+	// PingInterval follows the same rule as the server's IdleTimeout, and for the same
+	// reason: zero takes the default, negative disables the keepalive.  A client that
+	// silently stopped pinging because its caller left the field alone would be dropped
+	// by any server with an idle timeout, which is every server by default.
 	DialTimeout      time.Duration
 	HandshakeTimeout time.Duration
 	PingInterval     time.Duration
@@ -182,14 +187,23 @@ func Dial(ctx context.Context, cfg ClientConfig) (s *Session, err error) {
 	s = newSession(conn, cfg.Handlers, lgr, cfg.ID, cfg.Class, cfg.MaxInflight, 0)
 	go s.serve()
 
-	interval := cfg.PingInterval
-	if interval == 0 {
-		interval = defaultPingInterval
-	}
-	if interval > 0 {
+	if interval := resolvePingInterval(cfg.PingInterval); interval > 0 {
 		go s.keepalive(interval)
 	}
 	return
+}
+
+// resolvePingInterval applies the documented rule: zero takes the default, negative
+// disables the keepalive, anything else is used as given.  A zero return means no
+// keepalive goroutine at all.
+func resolvePingInterval(d time.Duration) time.Duration {
+	switch {
+	case d == 0:
+		return defaultPingInterval
+	case d < 0:
+		return 0
+	}
+	return d
 }
 
 // authenticateClient runs the client half of the challenge/response.

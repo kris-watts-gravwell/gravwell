@@ -56,9 +56,14 @@ type requiredPluginConfig struct {
 
 // harness is the whole test server, stood up in process.
 type harness struct {
-	ts    *httptest.Server
-	store *Store
+	ts     *httptest.Server
+	store  *Store
+	theAPI *API
 }
+
+// api is the server side of the protocol, for the tests that drive it directly rather
+// than through a route.
+func (h *harness) api() *API { return h.theAPI }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -67,13 +72,13 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	h, err := NewServer(store, testSecret, nil)
+	h, api, err := NewServer(store, testSecret, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
-	return &harness{ts: ts, store: store}
+	return &harness{ts: ts, store: store, theAPI: api}
 }
 
 // dial connects as an ingester would.

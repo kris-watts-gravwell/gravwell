@@ -76,7 +76,7 @@ func run() (err error) {
 	}
 	defer store.Close()
 
-	srv, err := NewServer(store, *secret, lgr)
+	srv, _, err := NewServer(store, *secret, lgr)
 	if err != nil {
 		return err
 	}

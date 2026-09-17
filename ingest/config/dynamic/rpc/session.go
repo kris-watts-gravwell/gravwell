@@ -58,8 +58,13 @@ type Session struct {
 
 	closeOnce sync.Once
 	done      chan struct{}
-	errMtx    sync.Mutex
-	err       error
+	// served is closed once the read loop has stopped and every handler it started has
+	// returned.  done says the session is finished with, this says nothing of its is
+	// still running, and the difference matters to anything that has to clean up after
+	// the work those handlers were doing.
+	served chan struct{}
+	errMtx sync.Mutex
+	err    error
 }
 
 // newSession wraps an already authenticated connection.
@@ -87,6 +92,7 @@ func newSession(conn *websocket.Conn, mux *Mux, lgr *log.Logger, id uuid.UUID, c
 		pending:     map[uint64]chan *message{},
 		sem:         make(chan struct{}, maxInflight),
 		done:        make(chan struct{}),
+		served:      make(chan struct{}),
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	// handlers are given a context derived from this one, so carrying the session in it
@@ -130,6 +136,33 @@ func (s *Session) RemoteAddr() string { return s.remote }
 
 // Done is closed when the session ends, for whatever reason.
 func (s *Session) Done() <-chan struct{} { return s.done }
+
+// Wait blocks until the session has stopped reading and every handler it was running has
+// returned.
+//
+// Close only starts that: it hangs up and unblocks callers, but a handler already part way
+// through its work keeps going, and that work can outlive the session.  Anything that
+// tears down state a handler touches has to wait for this rather than for Close, or it
+// pulls the state out from under work that is still happening.
+//
+// It is only meaningful on a session whose read loop was started, which is every session
+// Dial or the route handler produces.
+func (s *Session) Wait() { <-s.served }
+
+// WaitContext is Wait with a way out.
+//
+// Draining is not guaranteed to finish: a handler blocked on a filesystem that has gone
+// away stays blocked, and an unbounded wait on one turns an orderly shutdown into a
+// process that cannot be stopped without a kill.  A caller that has to make progress
+// bounds the wait and accepts that the work it was waiting for is still running.
+func (s *Session) WaitContext(ctx context.Context) error {
+	select {
+	case <-s.served:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 // Err reports why the session ended, nil while it is still running.
 func (s *Session) Err() (err error) {
@@ -267,6 +300,7 @@ func (s *Session) serve() {
 		// declaring the session over
 		s.closeWith(ErrSessionClosed)
 		wg.Wait()
+		close(s.served)
 	}()
 
 	for {

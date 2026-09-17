@@ -67,26 +67,40 @@ func main() {
 
 	var dyn dynamic.Manager
 	if cfg.Dynamic.Enabled() {
-		fmt.Println("enabling dynamic config")
 		// ingest/config still hands back a github.com/google/uuid value.  Both types are
 		// [16]byte, so this conversion is exact and checked at compile time, unlike a
 		// round trip through a string.  It goes away when that package moves too.
 		g := uuid.UUID(guid)
-
 		if dyn, err = dynamic.NewDynamicConfigManager(ctx, cfg.Dynamic, g, ib.Logger); err != nil {
 			ib.Logger.FatalCode(0, "failed to load dynamic manager", log.KVErr(err))
-		} else if err = dyn.Load(cfg); err != nil {
-			// cfg, not &cfg.  cfg is already a *cfgType and the overlay loader needs a
-			// pointer to the struct, a pointer to the pointer is refused.
-			ib.Logger.FatalCode(0, "failed to load dynamic configurations", log.KVErr(err))
 		}
 	} else {
 		dyn = dynamic.NewNil()
 	}
 	defer dyn.Close()
+
+	// Declare what this build can run before loading what has been deployed to it.  Load
+	// checks each dynamic configuration against the plugin that would have to run it, and
+	// names the runner it is reporting on using the kinds registered here, so registering
+	// first is what makes both of those work on the very first start.
 	if err = registerDynamicPluginTypes(dyn); err != nil {
 		ib.Logger.FatalCode(0, "failed to load dynamic plugin config types", log.KVErr(err))
-	} else if err = dyn.Start(); err != nil {
+	}
+
+	// A dynamic configuration that will not load is skipped and reported upstream rather
+	// than being fatal.  These arrive from a webserver, so one bad edit would otherwise
+	// stop every ingester it reached from starting, and keep them stopped: the ingester
+	// cannot get far enough to tell anyone why, and the file is still there on the next
+	// boot.  A failure here is the storage directory itself being unusable, which is a
+	// deployment problem that skipping a file does not fix.
+	//
+	// cfg, not &cfg.  cfg is already a *cfgType and the loader needs a pointer to the
+	// struct, a pointer to the pointer is refused.
+	if err = dyn.Load(cfg); err != nil {
+		ib.Logger.FatalCode(0, "failed to load dynamic configurations", log.KVErr(err))
+	}
+
+	if err = dyn.Start(); err != nil {
 		ib.Logger.FatalCode(0, "failed to start dynamic configuration client", log.KVErr(err))
 	}
 

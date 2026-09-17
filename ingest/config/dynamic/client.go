@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"net/url"
 	"os"
@@ -39,6 +40,10 @@ const (
 	// callTimeout bounds a single RPC.  A wedged server must not stall the loop forever.
 	callTimeout = 30 * time.Second
 
+	// sessionDrainTimeout is how long a closed session is given to finish the work it
+	// still had running before it is abandoned.  It bounds how long Close can take.
+	sessionDrainTimeout = 10 * time.Second
+
 	rpcPath = `/api/ingester/hosted`
 )
 
@@ -52,8 +57,10 @@ func backoff(n int) time.Duration {
 	if d > backoffMax || d <= 0 {  // <= 0 catches the shift overflowing
 		d = backoffMax
 	}
-	// full jitter, anywhere in (0, d]
-	return time.Duration(rand.Int63n(int64(d))) + time.Millisecond
+	// full jitter, anywhere in (0, d].  Int63n draws from [0, d), so the millisecond that
+	// keeps the wait off zero can push the result just past d: clamped rather than left
+	// to exceed the cap the line above went to the trouble of applying.
+	return min(time.Duration(rand.Int63n(int64(d)))+time.Millisecond, d)
 }
 
 // start launches the background client.  It returns immediately, the loop owns its own
@@ -103,6 +110,16 @@ func (dcm *DynamicConfigManager) run() {
 			dcm.lgr.Warn("dynamic config session ended", log.KV("webserver", endpoint.String()), log.KVErr(err))
 		}
 		sess.Close()
+		// and wait for it to actually be finished.  A pushed configuration is handled on
+		// the session's own goroutine, so without this the manager can be shut down and
+		// report itself stopped while a handler is still writing config files.
+		//
+		// Bounded, and deliberately not on the manager's context: by the time Close is
+		// what brought us here that context is already cancelled, so deriving from it
+		// would wait for nothing.  A handler wedged on a storage mount that has gone away
+		// never returns, and waiting on it forever would mean the ingester could not be
+		// shut down at all.
+		dcm.drainSession(sess)
 
 		// a session that came up and then dropped still backs off, otherwise a server
 		// that accepts and immediately hangs up becomes a tight reconnect loop
@@ -110,6 +127,18 @@ func (dcm *DynamicConfigManager) run() {
 		if !dcm.sleep(backoff(fails)) {
 			return
 		}
+	}
+}
+
+// drainSession waits for a closed session to finish whatever it was still running, up to
+// sessionDrainTimeout.  A session that will not drain is abandoned rather than waited on,
+// and said so out loud: the work it is stuck in is still holding whatever it held.
+func (dcm *DynamicConfigManager) drainSession(sess *rpc.Session) {
+	ctx, cf := context.WithTimeout(context.Background(), sessionDrainTimeout)
+	defer cf()
+	if err := sess.WaitContext(ctx); err != nil {
+		dcm.lgr.Warn("dynamic config session did not finish, abandoning it",
+			log.KV("waited", sessionDrainTimeout), log.KVErr(err))
 	}
 }
 
@@ -333,12 +362,12 @@ func (dcm *DynamicConfigManager) Sync(remote []RunnerDefinition) error {
 		delete(wanted, cur.UUID)
 
 		existing, rerr := os.ReadFile(cur.backingFile)
-		if rerr == nil && string(existing) == want.ini {
+		if rerr == nil && string(existing) == markRemote(want.ini) {
 			kept = append(kept, cur) // unchanged, leave the file alone
 			continue
 		}
 		pth := dcm.runnerPath(want.rd)
-		if werr := writeConfFile(pth, want.ini); werr != nil {
+		if werr := writeConfFile(pth, markRemote(want.ini)); werr != nil {
 			// a failure here is ours rather than the configuration's, but it is still the
 			// answer to "why is this runner not what I asked for", so it is reported the
 			// same way.  Carrying on means one unwritable file does not strand every
@@ -360,7 +389,7 @@ func (dcm *DynamicConfigManager) Sync(remote []RunnerDefinition) error {
 	// whatever is left in wanted is new
 	for _, want := range wanted {
 		pth := dcm.runnerPath(want.rd)
-		if werr := writeConfFile(pth, want.ini); werr != nil {
+		if werr := writeConfFile(pth, markRemote(want.ini)); werr != nil {
 			dcm.lgr.Error("dynamic config failed to write a config",
 				log.KV("file", pth), log.KVErr(werr))
 			rejected[want.rd.UUID] = runnerStatus(want.rd, fmt.Errorf("failed to write %s %w", pth, werr))
@@ -370,7 +399,16 @@ func (dcm *DynamicConfigManager) Sync(remote []RunnerDefinition) error {
 		added++
 	}
 
-	// the complete picture for this ingester, which is what the server replaces wholesale
+	// anything of the server's still on disk that this reconcile did not account for is
+	// left over from a previous run: a configuration deleted or renamed while this
+	// ingester was down, which nothing in memory remembers because the list starts empty
+	// every time the process does.  Without this sweep those files are loaded forever.
+	removed += dcm.sweepOrphans(kept, rejected)
+
+	// what the sync itself concluded.  Load failures are laid over the top when the set is
+	// read rather than baked in here, see Statuses: merging at the point of use is what
+	// lets a repaired configuration stop being reported without anything having to go
+	// back and unpick an entry that was written into this slice earlier.
 	dcm.statuses = buildStatuses(kept, rejected)
 
 	if added == 0 && updated == 0 && removed == 0 {
@@ -389,6 +427,89 @@ func (dcm *DynamicConfigManager) Sync(remote []RunnerDefinition) error {
 func (dcm *DynamicConfigManager) runnerPath(rd RunnerDefinition) string {
 	return filepath.Join(dcm.Storage,
 		fmt.Sprintf("%s_%s_%v.conf", fnameChunk(rd.Kind), fnameChunk(rd.Name), rd.UUID))
+}
+
+// remoteMarker is written as the first line of every configuration this ingester takes
+// from a webserver.
+//
+// It is what makes a file on disk answerable for itself.  Nothing else distinguishes a
+// configuration the server sent from one the ingester registered for itself: both are
+// written by the same code, into the same directory, under the same naming.  Without a
+// marker, reconciling the directory against what the server currently has would either
+// leave the server's deleted configurations behind forever or delete the ingester's own,
+// and there is no way to tell which from the file name alone.
+//
+// It is a comment, so gcfg reads straight past it.
+const remoteMarker = `; gravwell dynamic configuration, managed by the webserver`
+
+// markRemote prefixes an INI block with the marker.
+func markRemote(ini string) string {
+	return remoteMarker + "\n" + ini
+}
+
+// isRemoteConfig reports whether a file on disk is one the webserver owns.
+//
+// Only the first line is read.  A file that is unreadable, or that does not carry the
+// marker, is treated as not ours to delete, which is the safe direction to be wrong in:
+// the cost of keeping a file that should have gone is a stale configuration an operator
+// can see and remove, and the cost of deleting one that should have stayed is somebody
+// else's configuration disappearing.
+func isRemoteConfig(pth string) bool {
+	f, err := os.Open(pth)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, len(remoteMarker))
+	n, err := io.ReadFull(f, buf)
+	if err != nil && n < len(remoteMarker) {
+		return false
+	}
+	return string(buf[:n]) == remoteMarker
+}
+
+// sweepOrphans deletes the webserver's configurations that this reconcile did not keep.
+//
+// Only files carrying the marker are candidates, so a configuration the ingester
+// registered for itself is never touched no matter what the server says.  A file the
+// reconcile did account for is kept whether or not it was rewritten, including one held
+// back because the server sent a version that would not run: that file is the last thing
+// that worked, and deleting it is exactly what this ingester takes pains not to do.
+//
+// The caller holds the lock.
+func (dcm *DynamicConfigManager) sweepOrphans(kept []configuredRunner, rejected map[uuid.UUID]RunnerStatus) (removed int) {
+	files, err := overlayFiles(dcm.Storage)
+	if err != nil {
+		dcm.lgr.Error("dynamic config could not scan storage for stale configurations",
+			log.KV("storage", dcm.Storage), log.KVErr(err))
+		return
+	}
+	accounted := make(map[string]bool, len(kept))
+	for _, cur := range kept {
+		if cur.backingFile != `` {
+			accounted[cur.backingFile] = true
+		}
+	}
+	for _, pth := range files {
+		if accounted[pth] || !isRemoteConfig(pth) {
+			continue
+		}
+		// a file whose definition the server still has but which we rejected is not
+		// stale, it is the copy being held on to
+		if id, _, ok := parseRunnerFile(pth); ok {
+			if _, bad := rejected[id]; bad {
+				continue
+			}
+		}
+		if rerr := os.Remove(pth); rerr != nil && !os.IsNotExist(rerr) {
+			dcm.lgr.Error("dynamic config failed to remove a stale configuration",
+				log.KV("file", pth), log.KVErr(rerr))
+			continue
+		}
+		dcm.lgr.Info("dynamic config removed a stale configuration", log.KV("file", pth))
+		removed++
+	}
+	return
 }
 
 // runnerStatus builds the report for a definition this ingester could not take.
@@ -431,21 +552,72 @@ func buildStatuses(kept []configuredRunner, rejected map[uuid.UUID]RunnerStatus)
 	return
 }
 
+// mergeLoadErrors lays load failures over a set of statuses.
+//
+// A load failure wins over whatever the sync concluded.  The sync decides whether a
+// definition is one this ingester would run and whether the file got written; the load
+// finds out whether that file comes back as a working configuration.  A runner can pass
+// the first and fail the second, and reporting it clean on the strength of the first
+// would be saying it is running when it is not.
+//
+// A failure for a runner the sync never mentioned is carried through rather than dropped.
+// That is the case that matters most at startup: nothing has synced yet, so the only
+// thing known about a configuration on disk is that it will not load.
+func mergeLoadErrors(statuses []RunnerStatus, loadErrors map[uuid.UUID]RunnerStatus) []RunnerStatus {
+	if len(loadErrors) == 0 {
+		return statuses
+	}
+	out := make([]RunnerStatus, 0, len(statuses)+len(loadErrors))
+	seen := make(map[uuid.UUID]bool, len(loadErrors))
+	for _, rs := range statuses {
+		if le, bad := loadErrors[rs.UUID]; bad {
+			// keep the kind and name the sync knew, the file name they were parsed out of
+			// has been through fnameChunk and may not be what an operator typed
+			if le.Kind == `` {
+				le.Kind = rs.Kind
+			}
+			if le.Name == `` {
+				le.Name = rs.Name
+			}
+			out = append(out, le)
+			seen[rs.UUID] = true
+			continue
+		}
+		out = append(out, rs)
+	}
+	for id, le := range loadErrors {
+		if !seen[id] {
+			out = append(out, le)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return bytes.Compare(out[i].UUID[:], out[j].UUID[:]) < 0
+	})
+	return out
+}
+
 // Statuses is the latest verdict on every configuration the webserver has handed us, as
 // of the last sync.  The slice is a copy, a caller may hold it.
 func (dcm *DynamicConfigManager) Statuses() (r []RunnerStatus) {
 	dcm.mtx.Lock()
 	defer dcm.mtx.Unlock()
-	r = make([]RunnerStatus, len(dcm.statuses))
-	copy(r, dcm.statuses)
-	return
+	return dcm.statusesLocked()
+}
+
+// statusesLocked is the reported set: what the last sync concluded, with whatever would
+// not load off disk laid over the top.  The caller holds the lock.
+func (dcm *DynamicConfigManager) statusesLocked() []RunnerStatus {
+	merged := mergeLoadErrors(dcm.statuses, dcm.loadErrors)
+	r := make([]RunnerStatus, len(merged))
+	copy(r, merged)
+	return r
 }
 
 // statusFor is the verdict on one configuration, if we have formed one.
 func (dcm *DynamicConfigManager) statusFor(id uuid.UUID) (rs RunnerStatus, ok bool) {
 	dcm.mtx.Lock()
 	defer dcm.mtx.Unlock()
-	for _, cur := range dcm.statuses {
+	for _, cur := range dcm.statusesLocked() {
 		if cur.UUID == id {
 			return cur, true
 		}

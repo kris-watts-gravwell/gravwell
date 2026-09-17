@@ -415,14 +415,29 @@ func (s *Store) Runner(id uuid.UUID) (rd dynamic.RunnerDefinition, err error) {
 // no longer exists, and the next report cannot clear it because the ingester will not
 // mention a runner it was never handed.
 func (s *Store) DeleteRunner(id uuid.UUID) (err error) {
+	// both halves or neither.  Done as two statements, a failure between them leaves the
+	// runner gone and its errors behind, and nothing can ever clear those: an ingester
+	// only reports on runners it was handed, so it will never mention this one again.
+	var tx *sql.Tx
+	if tx, err = s.db.Begin(); err != nil {
+		return fmt.Errorf("failed to start a transaction %w", err)
+	}
+	defer tx.Rollback() // a no-op once committed, and the undo if anything below fails
+
 	var res sql.Result
-	if res, err = s.db.Exec(`DELETE FROM runners WHERE uuid = ?`, id.String()); err != nil {
+	if res, err = tx.Exec(`DELETE FROM runners WHERE uuid = ?`, id.String()); err != nil {
 		return fmt.Errorf("failed to delete runner %v %w", id, err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("runner %v %w", id, ErrNotFound)
 	}
-	return s.DeleteStatuses(id)
+	if _, err = tx.Exec(`DELETE FROM runner_status WHERE runner = ?`, id.String()); err != nil {
+		return fmt.Errorf("failed to delete the statuses of %v %w", id, err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit the deletion of %v %w", id, err)
+	}
+	return
 }
 
 // StatusRow is one ingester's last word about one configured runner.

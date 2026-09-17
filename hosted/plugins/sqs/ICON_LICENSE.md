@@ -4,21 +4,38 @@ This directory contains third-party icon assets. The terms below apply to those
 assets only, and not to the source code in this package, which is governed by
 the BSD 2-Clause license at the root of this repository.
 
-## aws-sqs.svg
+## sqs.svg
 
 | | |
 |---|---|
-| **Source** | `gilbarbara/logos` — https://github.com/gilbarbara/logos |
-| **File** | https://raw.githubusercontent.com/gilbarbara/logos/main/logos/aws-sqs.svg |
+| **File in this directory** | `sqs.svg` (2072 bytes, 40×40) |
+| **SHA-256 of this file** | `4a8a1c36e8ed1888c8fe3a773ccfb208a8a992ce5826bd60c9301e0cf572c166` |
+| **Artwork** | Amazon Simple Queue Service (SQS) service mark |
+| **Upstream source** | `gilbarbara/logos` — https://github.com/gilbarbara/logos |
+| **Upstream file** | https://raw.githubusercontent.com/gilbarbara/logos/main/logos/aws-sqs.svg |
 | **Author** | Gil Barbara and contributors |
 | **License** | Creative Commons CC0 1.0 Universal (Public Domain Dedication) |
 | **License text** | https://creativecommons.org/publicdomain/zero/1.0/legalcode |
-| **Retrieved** | 2026-09-17 |
-| **SHA-256** | `4aa44616e5486b43d27ca4c02af63167931ec1e42b47c31de4e0d69cd76c3b1f` |
+| **Recorded** | 2026-09-17 |
+
+### Modifications
+
+The file here is not byte-identical to the upstream one and its checksum will
+not match it. It is the same artwork rescaled from a 256×256 to a 40×40
+coordinate space and minified: identical gradient stops (`#B0084D` to
+`#FF4F8B`) along the identical vector, and the same white glyph over it.
+
+It carries no metadata of any kind — no XML declaration, no `<metadata>`,
+`<title>` or `<desc>`, no comments, no editor namespaces, and no C2PA or other
+provenance manifest. Every element in it is a rendering instruction, and the
+single `id` it declares is the gradient's own, which the artwork references. The
+checksum above is therefore of the artwork alone, and this document is the only
+record of where it came from.
 
 CC0 places the work in the public domain to the fullest extent permitted by
-law. No attribution is required, and no notice must be retained. This file is
-provided as a record of provenance rather than to satisfy an obligation.
+law. No attribution is required, no notice must be retained, and modification is
+permitted without condition. This file is provided as a record of provenance
+rather than to satisfy an obligation.
 
 ## Trademark notice
 

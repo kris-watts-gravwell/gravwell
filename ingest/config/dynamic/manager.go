@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -124,10 +125,20 @@ func (n *NopManager) Signal() (v <-chan struct{}) {
 func (n *NopManager) Load(v any) (err error) {
 	if v == nil {
 		return errors.New("nil object")
-	} else if reflect.ValueOf(v).Kind() != reflect.Pointer {
-		return errors.New("object must be a pointer")
 	}
-	// check that we can write to the pointer
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Pointer {
+		return errors.New("object must be a pointer")
+	} else if rv.IsNil() {
+		return errors.New("object is a nil pointer")
+	}
+	// it has to point at a struct, which is the only thing the config loader can fill in.
+	// A pointer to a pointer is the shape this gets handed by mistake, and it has to be
+	// refused loudly: it cannot be loaded into, so accepting it would mean a reload that
+	// silently applied no configuration at all and reported success.
+	if rv.Elem().Kind() != reflect.Struct {
+		return fmt.Errorf("object must be a pointer to a struct, got a pointer to %s", rv.Elem().Kind())
+	}
 	return nil // all good
 }
 
@@ -181,7 +192,23 @@ func (n *NopManager) Validate(rd RunnerDefinition) error {
 }
 
 // validateLocked is Validate with the lock already held.
+//
+// It recovers, because the last thing it does is call code this package does not own.  A
+// plugin's Verify runs on whatever the webserver sent, and a plugin that indexes past the
+// end of a string an operator typed would otherwise take the whole ingester down from the
+// poll goroutine, every time it restarts, for as long as the definition is on the server.
+// The rpc package guards inbound handlers for exactly this reason; this is the same
+// hazard reached down the polling path instead.
+//
+// A definition that makes validation panic is refused, which is the same answer as a
+// definition that fails it, and the panic goes into the reason so it is visible rather
+// than swallowed.
 func (n *NopManager) validateLocked(rd RunnerDefinition) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: validating it panicked: %v", ErrInvalidRunner, r)
+		}
+	}()
 	var rk registeredKind
 	var ok bool
 	if rk, ok = n.lookupKindLocked(rd.Kind); !ok {
@@ -374,10 +401,31 @@ type DynamicConfigManager struct {
 	// lists it is derived from, because it has to be rebuilt in the same critical section
 	// that decides what is on disk or the two can disagree.
 	statuses []RunnerStatus
+
+	// loadErrors are the configurations that would not load off disk at the last Load.
+	//
+	// They are held apart from the sync because they are found at a different time and
+	// answer a different question.  A sync says whether a definition is one we would
+	// accept; a load says whether the file we wrote actually comes back.  A file can pass
+	// the first and fail the second, and when it does that is the fact worth reporting,
+	// so these are merged over the top of the sync's verdict rather than under it.
+	//
+	// The set is replaced wholesale by each Load, which is what clears an entry: a
+	// configuration that has been fixed simply stops appearing.
+	loadErrors map[uuid.UUID]RunnerStatus
 }
 
 func NewDynamicConfigManager(ctx context.Context, c Config, guid uuid.UUID, lgr *log.Logger) (m Manager, err error) {
 	if err = c.Verify(); err != nil {
+		return
+	}
+	// Verify only checks the contents of a block that is turned on: a config with nothing
+	// in it is legitimately "no dynamic configuration" and passes.  That is fine as an
+	// answer to "is this block valid" and useless as an answer to "can this manager run",
+	// which is the question being asked here.  Without this the background loop reaches
+	// for a webserver out of an empty list and takes the process down with it.
+	if len(c.Webserver) == 0 {
+		err = errors.New("dynamic configuration has no webserver endpoints, it cannot run")
 		return
 	}
 	if ctx == nil {
@@ -410,7 +458,6 @@ func NewDynamicConfigManager(ctx context.Context, c Config, guid uuid.UUID, lgr 
 		return nil, err
 	}
 
-	dcm.start()
 	m = dcm
 	return
 }
@@ -453,15 +500,299 @@ func (dcm *DynamicConfigManager) RegisterKind(kind string, singleton bool, v any
 	return
 }
 
+// Load applies every configuration in the storage directory on top of v.
+//
+// A file that cannot be loaded is skipped rather than fatal.  That is the whole point of
+// doing this here instead of calling config.LoadConfigOverlays: the overlay loader stops
+// at the first file it cannot parse and returns an error, which an ingester turns into a
+// refusal to start.  One bad configuration then takes the whole ingester down, including
+// every other configuration that was fine, and it stays down until somebody with shell
+// access finds the file and deletes it.  A configuration arrives from a webserver, so
+// that is a way for one bad edit to strand a fleet.
+//
+// Each file is tried on its own first and only applied once it is known to load, so a
+// file that fails never leaves a half applied section behind in v.  The reason is
+// recorded against the runner the file belongs to and goes upstream on the next status
+// report, which is what turns "the ingester will not start" into "this runner is broken,
+// and here is why".
 func (dcm *DynamicConfigManager) Load(v any) (err error) {
 	// use the embedded NopManager to do the any object validation because we are lazy
 	if err = dcm.NopManager.Load(v); err != nil {
 		return
 	}
 
-	// use the config system to load overlays
-	err = config.LoadConfigOverlays(v, dcm.Storage)
+	var files []string
+	if files, err = overlayFiles(dcm.Storage); err != nil {
+		// the directory itself is unusable, which is not something skipping a file fixes
+		return
+	}
+
+	failures := map[uuid.UUID]RunnerStatus{}
+	var loaded int
+	for _, pth := range files {
+		if lerr := loadOne(v, pth); lerr != nil {
+			dcm.lgr.Error("dynamic config skipping a configuration that will not load",
+				log.KV("file", pth), log.KVErr(lerr))
+			dcm.recordLoadFailure(failures, pth, lerr)
+			continue
+		}
+		loaded++
+	}
+
+	dcm.setLoadFailures(failures)
+	if len(failures) > 0 {
+		dcm.lgr.Warn("dynamic config loaded with failures",
+			log.KV("loaded", loaded), log.KV("failed", len(failures)))
+		// get the reasons upstream rather than sitting on them until the next poll
+		dcm.nudgeClient()
+	}
+	return nil
+}
+
+// maxConfigBytes matches the ceiling ingest/config puts on a single configuration file.
+// It is restated here because loadOne reads the bytes itself rather than handing the path
+// to a loader that would check it.
+const maxConfigBytes = 4 * 1024 * 1024
+
+// loadOne applies one config file to v, or leaves v untouched and says why not.
+//
+// The file is read once and the same bytes are parsed twice: first into a throwaway of
+// v's own type to find out whether they load at all, and only then into v.  Both halves
+// of that matter.  gcfg populates as it parses, so a file that fails halfway has already
+// written whatever preceded the failure, which is why the trial cannot run against the
+// live configuration.  And the trial has to be of the same bytes rather than of the same
+// path, or a file rewritten between the two reads is checked in one state and applied in
+// another, which puts the half applied section back exactly where the trial was meant to
+// stop it: a sync running on the background goroutine writes into this directory, so
+// that race is ordinary rather than theoretical.
+//
+// Having parsed once, the second parse cannot fail for anything in the bytes, so v is
+// only ever touched by content already known to be good.
+func loadOne(v any, pth string) error {
+	rt := reflect.TypeOf(v)
+	if rt == nil || rt.Kind() != reflect.Pointer {
+		return errors.New("object must be a pointer")
+	}
+	fi, err := os.Stat(pth)
+	if err != nil {
+		return err
+	} else if fi.Size() > maxConfigBytes {
+		return fmt.Errorf("configuration is %d bytes, over the %d byte limit", fi.Size(), maxConfigBytes)
+	}
+	blob, err := os.ReadFile(pth)
+	if err != nil {
+		return err
+	}
+	probe := reflect.New(rt.Elem())
+	if err = config.LoadConfigBytes(probe.Interface(), blob); err != nil {
+		return err
+	}
+	// it parses.  That is not the same as it being usable: a tag name full of punctuation
+	// or a duration with no unit is a perfectly good string and only the plugin that has
+	// to run it knows otherwise.  The probe holds exactly what this one file introduced,
+	// so asking it now is what keeps the answer to one configuration.
+	if err = verifyLoaded(probe.Interface()); err != nil {
+		return err
+	}
+	return config.LoadConfigBytes(v, blob)
+}
+
+// verifyLoaded runs the plugins' own Verify over everything a configuration introduced.
+//
+// It walks rather than being told what to look for.  The target type is the thing that
+// already knows which plugins exist and what shape they are held in, so a plugin added
+// later is checked with no change here, and nothing has to resolve a section name back to
+// a Go type.  Only map entries are verified, because that is how a named plugin
+// configuration is held, and the value being walked came from one file into a zero value,
+// so the only entries present are the ones that file created.
+//
+// It recovers for the same reason validateLocked does: Verify is somebody else's code
+// running on whatever was deployed, and a panic in it must cost one configuration rather
+// than the whole ingester.
+func verifyLoaded(v any) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("verifying it panicked: %v", r)
+		}
+	}()
+	rv := derefValue(reflect.ValueOf(v))
+	if !rv.IsValid() || rv.Kind() != reflect.Struct {
+		return nil
+	}
+	return verifyStructMembers(rv, 0)
+}
+
+// verifyStructMembers walks a config struct looking for plugin configurations to verify.
+func verifyStructMembers(rv reflect.Value, depth int) (err error) {
+	if depth > maxStructDepth || !rv.IsValid() || rv.Kind() != reflect.Struct {
+		return nil
+	}
+	rt := rv.Type()
+	for i := range rt.NumField() {
+		f, fv := rt.Field(i), rv.Field(i)
+		// an embedded struct promotes its members, and the plugin set is embedded, so
+		// recurse before the export check the way the rest of this package does
+		if f.Anonymous && derefType(f.Type).Kind() == reflect.Struct {
+			if err = verifyStructMembers(derefValue(fv), depth+1); err != nil {
+				return
+			}
+			continue
+		}
+		if !f.IsExported() {
+			continue
+		}
+		switch fv.Kind() {
+		case reflect.Map:
+			if err = verifyMapMembers(f.Name, fv); err != nil {
+				return
+			}
+		case reflect.Struct, reflect.Pointer:
+			if err = verifyStructMembers(derefValue(fv), depth+1); err != nil {
+				return
+			}
+		}
+	}
 	return
+}
+
+// verifyMapMembers verifies each configuration held in a named map, which is how every
+// plugin that can be configured more than once is carried.
+func verifyMapMembers(field string, fv reflect.Value) error {
+	for _, k := range fv.MapKeys() {
+		ev := fv.MapIndex(k)
+		switch ev.Kind() {
+		case reflect.Pointer, reflect.Interface:
+			if ev.IsNil() {
+				continue
+			}
+		}
+		if !ev.CanInterface() {
+			continue
+		}
+		if vf, ok := ev.Interface().(interface{ Verify() error }); ok {
+			if verr := vf.Verify(); verr != nil {
+				return fmt.Errorf("%s %q: %w", field, k.String(), verr)
+			}
+		}
+	}
+	return nil
+}
+
+// overlayFiles lists the config files in a storage directory, in a stable order.
+//
+// A missing directory is not an error, it just means nothing has been deployed yet, which
+// is the same thing LoadConfigOverlays does.
+func overlayFiles(pth string) (r []string, err error) {
+	if pth == `` {
+		return
+	}
+	var fi os.FileInfo
+	if fi, err = os.Stat(pth); err != nil {
+		if os.IsNotExist(err) {
+			err = nil
+		}
+		return
+	} else if !fi.IsDir() {
+		return nil, fmt.Errorf("storage %q is not a directory", pth)
+	}
+	var dents []os.DirEntry
+	if dents, err = os.ReadDir(pth); err != nil {
+		return nil, fmt.Errorf("failed to read storage %q %w", pth, err)
+	}
+	for _, dent := range dents {
+		if !dent.Type().IsRegular() || filepath.Ext(dent.Name()) != confExt {
+			continue
+		}
+		r = append(r, filepath.Join(pth, dent.Name()))
+	}
+	sort.Strings(r) // ReadDir is already sorted, this says that it has to stay that way
+	return
+}
+
+// recordLoadFailure files the reason a config could not be loaded against the runner it
+// belongs to.
+//
+// The runner is identified from the file name, which is where the UUID is: the in memory
+// list of configured runners is empty at startup, which is exactly when this matters
+// most.  A file that does not carry a UUID cannot be reported against anything, so it is
+// left to the log the caller already wrote.
+func (dcm *DynamicConfigManager) recordLoadFailure(into map[uuid.UUID]RunnerStatus, pth string, err error) {
+	id, rest, ok := parseRunnerFile(pth)
+	if !ok {
+		return
+	}
+	kind, name := dcm.splitKindName(rest)
+	into[id] = RunnerStatus{
+		UUID:  id,
+		Kind:  kind,
+		Name:  name,
+		Error: fmt.Sprintf("failed to load %s: %v", filepath.Base(pth), err),
+	}
+}
+
+// splitKindName separates the kind from the name in the middle of a config file name.
+//
+// It cannot be done by looking for a separator.  fnameChunk keeps underscores, so both
+// halves may contain one and "My_Kind_my_runner" has four readings, only one of them
+// right.  The registered kinds are what settle it: the longest one that prefixes this is
+// the kind, and the rest is the name.
+//
+// When nothing matches there is no honest split to make, so none is made and the whole
+// thing is reported as the name.  That is the case on the very first load of a process,
+// before any kind has been registered, and a label that is merely unsplit beats one that
+// confidently names the wrong kind.
+func (dcm *DynamicConfigManager) splitKindName(rest string) (kind, name string) {
+	var best string
+	for _, k := range dcm.KindNames() {
+		chunk := fnameChunk(k)
+		if chunk == `` || len(chunk) >= len(rest) {
+			continue
+		}
+		if strings.HasPrefix(rest, chunk+`_`) && len(chunk) > len(best) {
+			best = chunk
+			kind, name = k, rest[len(chunk)+1:]
+		}
+	}
+	if best == `` {
+		return ``, rest
+	}
+	return
+}
+
+// parseRunnerFile pulls the UUID back out of a file name written by runnerPath, which
+// builds them as kind_name_uuid.conf, and hands back the kind_name part unsplit.
+//
+// The UUID is taken from the end rather than by counting fields from the front, because
+// both the kind and the name may contain an underscore: fnameChunk keeps them.  That same
+// ambiguity is why the rest is returned as it stands rather than being split here, see
+// splitKindName, which has the registered kinds to settle it with.
+func parseRunnerFile(pth string) (id uuid.UUID, rest string, ok bool) {
+	base := strings.TrimSuffix(filepath.Base(pth), confExt)
+	idx := strings.LastIndex(base, `_`)
+	if idx < 0 {
+		return
+	}
+	var err error
+	if id, err = uuid.Parse(base[idx+1:]); err != nil {
+		return
+	}
+	return id, base[:idx], true
+}
+
+// setLoadFailures replaces what the last load made of the directory and refreshes the
+// reported set so the failures are visible without waiting for a sync.
+func (dcm *DynamicConfigManager) setLoadFailures(failures map[uuid.UUID]RunnerStatus) {
+	dcm.mtx.Lock()
+	defer dcm.mtx.Unlock()
+	dcm.loadErrors = failures
+}
+
+// nudgeClient wakes the background client without blocking if it is already awake.
+func (dcm *DynamicConfigManager) nudgeClient() {
+	select {
+	case dcm.nudge <- struct{}{}:
+	default:
+	}
 }
 
 func (dcm *DynamicConfigManager) RegisterRunner(name, kind string, guid uuid.UUID, v any) (err error) {

@@ -53,7 +53,11 @@ type ServerConfig struct {
 	HandshakeTimeout time.Duration
 
 	// IdleTimeout closes a session that has not received anything in this long.
-	// Optional, zero disables it.
+	// Optional: zero takes the default, negative disables it entirely.
+	//
+	// Zero is the default rather than "off" because zero is what a caller who has not
+	// thought about it supplies, and a server with no idle timeout leaks a session for
+	// every client that goes away without closing.  Turning it off has to be asked for.
 	IdleTimeout time.Duration
 
 	// MaxPayloadBytes caps a single message.  Optional.
