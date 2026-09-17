@@ -1360,3 +1360,84 @@ func TestFormEnforcesConditionalRequirement(t *testing.T) {
 		t.Errorf("a complete static configuration was refused:\n%s", body)
 	}
 }
+
+// TestFormKeepsAValueTheEnumNoLongerOffers covers what happens when a plugin drops a value
+// an existing runner still holds.
+//
+// A select always has something selected, so an option that is merely not marked falls to
+// the first entry.  Left like that, an operator who opened the runner to rename it would
+// save a different value for a field they never touched, and for a field others depend on
+// through requiredif that also flips their requirements.
+func TestFormKeepsAValueTheEnumNoLongerOffers(t *testing.T) {
+	h := newHarness(t)
+	proto, err := dynamic.MapRunnerDefinition(`SQS`, `SQS`, sqs.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.ReplaceKinds(uuid.New(), `edge`, []dynamic.RunnerDefinition{proto}); err != nil {
+		t.Fatal(err)
+	}
+
+	// a runner holding a mode the plugin no longer declares, stored directly because the
+	// form would not let one be created now
+	id := uuid.New()
+	stored := proto
+	stored.Name, stored.UUID = `legacy`, id
+	stored.Variables = append([]dynamic.Variable(nil), proto.Variables...)
+	for i := range stored.Variables {
+		switch stored.Variables[i].Name {
+		case `Credentials-Type`:
+			stored.Variables[i].Value = `retired-mode`
+		case `Queue-URL`:
+			stored.Variables[i].Value = `https://sqs.us-east-1.amazonaws.com/1/q`
+		case `Region`:
+			stored.Variables[i].Value = `us-east-1`
+		}
+	}
+	if err = h.store.PutRunner(stored); err != nil {
+		t.Fatal(err)
+	}
+
+	_, body := h.get(t, `/ui/edit?uuid=`+id.String())
+	// the held value is still offered, still selected, and marked as no longer supported
+	if !strings.Contains(body, `<option value="retired-mode" selected>retired-mode (no longer offered)</option>`) {
+		t.Errorf("the held value was dropped from the picker, so saving would silently change it:\n%s", body)
+	}
+	// and none of the declared options is silently selected in its place
+	for _, opt := range []string{`static`, `environment`, `ec2role`} {
+		if strings.Contains(body, `<option value="`+opt+`" selected>`) {
+			t.Errorf("%q was selected in place of the held value", opt)
+		}
+	}
+}
+
+// TestFormAlwaysOffersABlankChoice covers the required select.
+//
+// A select always has a selection and the browser's required check only fires on an empty
+// value, so without a blank entry a required picker starts on its first option and can be
+// submitted by someone who never looked at it.
+func TestFormAlwaysOffersABlankChoice(t *testing.T) {
+	h := newHarness(t)
+	proto, err := dynamic.MapRunnerDefinition(`SQS`, `SQS`, sqs.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// make the picker required, the shape no shipped plugin has yet
+	for i := range proto.Variables {
+		if proto.Variables[i].Name == `Credentials-Type` {
+			proto.Variables[i].Required = true
+		}
+	}
+	if err = h.store.ReplaceKinds(uuid.New(), `edge`, []dynamic.RunnerDefinition{proto}); err != nil {
+		t.Fatal(err)
+	}
+	_, body := h.get(t, `/ui/new?kind=SQS`)
+	sel := body[strings.Index(body, `<select name="var.Credentials-Type"`):]
+	sel = sel[:strings.Index(sel, `</select>`)]
+	if !strings.Contains(sel, `<option value="" selected>`) {
+		t.Errorf("a required picker has no blank choice, so it starts on a value nobody chose:\n%s", sel)
+	}
+	if strings.Contains(sel, `<option value="static" selected>`) {
+		t.Errorf("the first value was pre-selected:\n%s", sel)
+	}
+}

@@ -52,9 +52,14 @@ type field struct {
 }
 
 // option is one choice in a picker.
+//
+// Unknown marks a value the configuration holds that the plugin no longer offers, which
+// is kept rather than dropped so that changing it is something an operator does on
+// purpose rather than something a save does to them.
 type option struct {
 	Value    string
 	Selected bool
+	Unknown  bool
 }
 
 // controlFor picks an input shape for a variable.
@@ -205,14 +210,35 @@ func fieldsFor(proto dynamic.RunnerDefinition, cur *dynamic.RunnerDefinition) (r
 }
 
 // optionsFor builds a picker's choices, marking the ones currently held.
+//
+// A value the configuration holds which is not in the declared set is carried through as
+// a choice of its own rather than being left unselected.  Dropping it looks harmless and
+// is not: a select always has a selection, so an unselected one silently falls to its
+// first entry, and an operator who opened the runner to rename it would save a different
+// value for a field they never touched.  Offered and marked, the change stays theirs to
+// make, and a field that other fields depend on through requiredif does not flip its
+// requirements behind them.
 func optionsFor(enum, selected []string) (r []option) {
 	have := make(map[string]bool, len(selected))
 	for _, s := range selected {
-		have[s] = true
+		if s != `` {
+			have[s] = true
+		}
 	}
-	r = make([]option, 0, len(enum))
+	r = make([]option, 0, len(enum)+len(have))
+	declared := make(map[string]bool, len(enum))
 	for _, e := range enum {
+		declared[e] = true
 		r = append(r, option{Value: e, Selected: have[e]})
+	}
+	// whatever is held but no longer declared, in the order it was held so the list is
+	// stable across renders
+	for _, s := range selected {
+		if s == `` || declared[s] {
+			continue
+		}
+		declared[s] = true
+		r = append(r, option{Value: s, Selected: true, Unknown: true})
 	}
 	return
 }

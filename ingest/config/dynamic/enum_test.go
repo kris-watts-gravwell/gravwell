@@ -154,6 +154,15 @@ func TestBadEnumTagsAreRefused(t *testing.T) {
 		{`requiredif with no field`, struct {
 			S string `dynamic:"requiredif=:static"`
 		}{}},
+		// a secret is masked and its value withheld, so there is nothing to offer a
+		// choice of and nothing to check the choice against.  Accepted, the pair would be
+		// inert in both directions.
+		{`enum on a secret`, struct {
+			S string `json:"-" dynamic:"secret,enum=a|b"`
+		}{}},
+		{`enum on a secret, tags reversed`, struct {
+			S string `json:"-" dynamic:"enum=a|b,secret"`
+		}{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := MapRunnerDefinition(`k`, `n`, tc.v); err == nil {

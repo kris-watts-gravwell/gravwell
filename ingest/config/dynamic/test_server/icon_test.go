@@ -286,3 +286,78 @@ func TestSanitizeIconDropsUnusableIds(t *testing.T) {
 		}
 	}
 }
+
+// TestSanitizeIconKeepsUnderscoreIds covers the ids real exporters emit.
+//
+// XML lets a Name begin with an underscore or a colon, and Illustrator uses that to
+// encode an id that would otherwise start with a digit: _x31_ is an ordinary thing to
+// find in exported artwork.  Dropping those took the gradient and every reference to it
+// with them, leaving a shape with nothing to paint it and no error anywhere.
+func TestSanitizeIconKeepsUnderscoreIds(t *testing.T) {
+	for _, id := range []string{`a`, `linearGradient-1`, `SVGID_1_`, `paint0_linear`, `_gradient1`, `_x31_`, `:ns`} {
+		t.Run(id, func(t *testing.T) {
+			raw := `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">` +
+				`<defs><linearGradient id="` + id + `"><stop stop-color="#B0084D" offset="0%"/></linearGradient></defs>` +
+				`<g fill="none"><path d="M0 0h40v40H0z" fill="url(#` + id + `)"/></g></svg>`
+			out, ok := sanitizeIcon(raw)
+			if !ok {
+				t.Fatal(`dropped entirely`)
+			}
+			got := string(out)
+			idm := regexp.MustCompile(`id="([^"]+)"`).FindStringSubmatch(got)
+			ref := regexp.MustCompile(`fill="url\(#([^)]+)\)"`).FindStringSubmatch(got)
+			if idm == nil {
+				t.Fatalf("the gradient lost its id, so nothing can reference it:\n%s", got)
+			}
+			if ref == nil {
+				t.Fatalf("the fill lost its reference, so the shape has nothing to paint it:\n%s", got)
+			}
+			if idm[1] != ref[1] {
+				t.Errorf("reference %q does not match id %q", ref[1], idm[1])
+			}
+		})
+	}
+
+	// an id that could end the attribute early is still refused, which is what lets the
+	// rewriting write it without escaping
+	for _, bad := range []string{`a"onload="x`, `a b`, `a)`, `a<b`} {
+		raw := `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">` +
+			`<defs><linearGradient id="` + bad + `"><stop stop-color="#fff" offset="0%"/></linearGradient></defs>` +
+			`<path d="M0 0h40v40H0z"/></svg>`
+		if out, ok := sanitizeIcon(raw); ok {
+			low := strings.ToLower(string(out))
+			if strings.Contains(low, `onload`) || strings.Contains(low, `id="`+strings.ToLower(bad)) {
+				t.Errorf("id %q was kept verbatim:\n%s", bad, out)
+			}
+		}
+	}
+}
+
+// TestSanitizeIconReadsEverySizeUnit covers an icon with no viewBox.  The size it was
+// authored at is the only record of how far the drawing extends, and reading only px
+// meant an export in any other unit fell back to a square and was cropped to a corner of
+// itself.
+func TestSanitizeIconReadsEverySizeUnit(t *testing.T) {
+	for _, tc := range []struct{ size, want string }{
+		{`40`, `0 0 40 40`},
+		{`40px`, `0 0 40 40`},
+		{`40pt`, `0 0 40 40`},
+		{`40mm`, `0 0 40 40`},
+		{`2em`, `0 0 2 2`},
+		{`40.5`, `0 0 40.5 40.5`},
+		// a percentage is a fraction of something else rather than an extent, so there is
+		// nothing to recover and the square fallback is all that is left
+		{`100%`, iconViewBox},
+	} {
+		t.Run(tc.size, func(t *testing.T) {
+			raw := `<svg xmlns="http://www.w3.org/2000/svg" width="` + tc.size + `" height="` + tc.size + `"><path d="M0 0h40v40H0z"/></svg>`
+			out, ok := sanitizeIcon(raw)
+			if !ok {
+				t.Fatal(`dropped`)
+			}
+			if !strings.Contains(string(out), `viewBox="`+tc.want+`"`) {
+				t.Errorf("size %q produced %s, want viewBox %q", tc.size, out, tc.want)
+			}
+		})
+	}
+}

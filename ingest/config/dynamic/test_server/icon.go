@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // An icon is drawn by whoever wrote the ingester, and it arrives here over the wire.  It
@@ -86,14 +87,24 @@ var rootOnlyAttrs = map[string]bool{`viewbox`: true, `preserveaspectratio`: true
 // They are the only place a url() reference is allowed, and even there only a local one.
 var paintAttrs = map[string]bool{`fill`: true, `stroke`: true, `stop-color`: true}
 
-// idPattern is what an id has to look like to be kept.  Anything outside this cannot be
-// referenced by the url(#id) syntax anyway, and keeping the set narrow means the rewriting
-// below never has to think about escaping.
-var idPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.:-]*$`)
+// idChars is the shape an id has to have to be kept: the ASCII part of an XML Name, which
+// may begin with a letter, an underscore or a colon.
+//
+// The underscore matters more than it looks.  Illustrator encodes an id that would
+// otherwise start with a digit as something like _x31_, so a pattern that insisted on a
+// leading letter threw away the ids of a whole family of exported artwork, and with them
+// the references pointing at those ids, leaving a shape with nothing to paint it.
+//
+// It stays an allow list because the rewriting below writes ids straight into an
+// attribute: every character here is one that cannot end it early.
+const idChars = `[A-Za-z_:][A-Za-z0-9_.:-]*`
+
+// idPattern is what an id has to look like to be kept.
+var idPattern = regexp.MustCompile(`^` + idChars + `$`)
 
 // localRef matches a reference to a paint server in the same document, which is the only
 // kind allowed: url(#name), with optional whitespace and quoting.
-var localRef = regexp.MustCompile(`^url\(\s*['"]?#([A-Za-z][A-Za-z0-9_.:-]*)['"]?\s*\)$`)
+var localRef = regexp.MustCompile(`^url\(\s*['"]?#(` + idChars + `)['"]?\s*\)$`)
 
 // canonicalNames restores the spelling of the SVG names that are camel case.
 //
@@ -120,11 +131,22 @@ func canonical(name string) string {
 	return name
 }
 
-// sizeValue reads a width or height off the root element.  SVG allows a unit suffix and a
-// bare number means user units, which is what a viewBox is measured in.
+// sizeValue reads a width or height off the root element.
+//
+// Any unit is accepted, not just px: a bare number is user units, and every absolute unit
+// SVG allows still carries the number that says how far the drawing extends.  Trimming
+// only px meant an export in pt or mm parsed as nothing and fell back to a square, which
+// cropped the artwork to a corner of itself.
+//
+// A percentage is the exception and is deliberately refused.  It is a fraction of
+// something else rather than an extent, so there is genuinely no coordinate space to
+// recover from it and the square fallback is the only answer left.
 func sizeValue(v string) (float64, bool) {
 	v = strings.TrimSpace(v)
-	v = strings.TrimSuffix(v, `px`)
+	if strings.HasSuffix(v, `%`) {
+		return 0, false
+	}
+	v = strings.TrimRightFunc(v, unicode.IsLetter)
 	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 	if err != nil || f <= 0 {
 		return 0, false

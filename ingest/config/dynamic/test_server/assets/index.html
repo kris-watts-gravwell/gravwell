@@ -205,17 +205,21 @@
 			{{- if .Description }}<span class="hint">{{.Description}}</span>{{ end }}
 			{{- if .RequiredWhen }}<span class="hint cond">{{.RequiredWhen}}</span>{{ end }}
 			{{- if eq .Control "select" }}
+			{{- /* the blank option is always there, required or not.  A select always has
+			       something selected, so without it a required one starts on its first
+			       value and the browser's own required check can never fire: the operator
+			       would be recorded as having chosen something they never looked at. */ -}}
 			<select name="var.{{.Name}}"{{if .Required}} required{{end}}>
-				{{- if not .Required }}<option value=""></option>{{ end }}
+				<option value=""{{if not .Value}} selected{{end}}></option>
 				{{- range .Options }}
-				<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Value}}</option>
+				<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Value}}{{if .Unknown}} (no longer offered){{end}}</option>
 				{{- end }}
 			</select>
 			{{- else if eq .Control "multiselect" }}
 			<span class="hint">Hold ctrl or cmd to choose more than one.</span>
 			<select name="var.{{.Name}}" multiple size="{{if lt (len .Options) 8}}{{len .Options}}{{else}}8{{end}}"{{if .Required}} required{{end}}>
 				{{- range .Options }}
-				<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Value}}</option>
+				<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Value}}{{if .Unknown}} (no longer offered){{end}}</option>
 				{{- end }}
 			</select>
 			{{- else if eq .Control "secret" }}

@@ -773,6 +773,15 @@ func mapField(f reflect.StructField, fv reflect.Value, depth int) (v Variable, e
 				v.Name, ErrUnsupportedType, ft)
 			return
 		}
+		// and never on a secret.  A secret is drawn masked and its value is withheld, so
+		// there is nothing to offer a choice of, and the two tags together would be
+		// accepted and then quietly do nothing: the control stays a password box and the
+		// set is never enforced, because a withheld value is not one anything checks.
+		if hasDynamicOption(f, optSecret) {
+			err = fmt.Errorf("%s: %w, a secret cannot carry an enum, its value is never shown or offered",
+				v.Name, ErrUnsupportedType)
+			return
+		}
 	}
 
 	// a member tagged dynamic:"requiredif=Other:a|b" is required only while the variable
