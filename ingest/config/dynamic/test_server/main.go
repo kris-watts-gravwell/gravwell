@@ -16,7 +16,7 @@
 //
 //	test_server -bind 127.0.0.1:8080 -secret <shared token> -storage ./dynamic.db
 //
-// Ingesters connect to ws://<bind>/api/ingester/hosted and authenticate with the same
+// Ingesters connect to ws://<bind>/api/ingesters/control and authenticate with the same
 // shared token, which is never transmitted, see the rpc package for how that works.
 package main
 
@@ -30,13 +30,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
+	"github.com/gravwell/gravwell/v4/client"
 	"github.com/gravwell/gravwell/v4/ingest/log"
 )
-
-// RPCPath is where the ingester facing websocket lives.  It comes from the dynamic
-// package so that the ingester and this server cannot disagree about it.
-const RPCPath = dynamic.RPCPath
 
 const (
 	readHeaderTimeout = 10 * time.Second
@@ -91,10 +87,10 @@ func run() (err error) {
 	// test server should not leave a half written database behind
 	errCh := make(chan error, 1)
 	go func() {
-		lgr.Info("serving", log.KV("bind", *bind), log.KV("rpc", RPCPath),
+		lgr.Info("serving", log.KV("bind", *bind), log.KV("rpc", client.INGESTERS_CONTROL_URL),
 			log.KV("storage", *storage))
 		fmt.Printf("dynamic config test server\n  web interface  http://%s/\n  ingester RPC   ws://%s%s\n  storage        %s\n",
-			*bind, *bind, RPCPath, *storage)
+			*bind, *bind, client.INGESTERS_CONTROL_URL, *storage)
 		if lerr := hsrv.ListenAndServe(); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
 			errCh <- lerr
 		}

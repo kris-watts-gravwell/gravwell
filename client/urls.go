@@ -198,17 +198,19 @@ const (
 	SECRETS_ID_VALUE_URL             = `/api/secrets/%s/value`
 	SECRETS_ID_FULL_URL              = `/api/secrets/%s/full`
 	SETTINGS_URL                     = `/api/settings`
-	INGESTERS_TRACKING_URL           = `/api/ingesters/%s/tracking`
-	ALERTS_URL                       = `/api/alerts`
-	ALERTS_LIST_URL                  = `/api/alerts/list`
-	ALERTS_ID_URL                    = `/api/alerts/%s`
-	ALERTS_ID_SAMPLE_URL             = `/api/alerts/%s/sample`
-	ALERTS_VALIDATE_DISPATCHER_URL   = `/api/alerts/validate/dispatcher`
-	ALERTS_VALIDATE_CONSUMER_URL     = `/api/alerts/validate/consumer`
-	USER_PREFERENCES_URL             = `/api/userpreferences`
-	USER_PREFERENCES_LIST_URL        = `/api/userpreferences/list`
-	USER_PREFERENCES_ID_URL          = `/api/userpreferences/%s`
-	LIST_URL                         = `/api/list`
+	INGESTERS_TRACKING_URL           = `/api/ingesters/tracking/%s`
+	INGESTERS_CONTROL_URL            = `/api/ingesters/control`
+
+	ALERTS_URL                     = `/api/alerts`
+	ALERTS_LIST_URL                = `/api/alerts/list`
+	ALERTS_ID_URL                  = `/api/alerts/%s`
+	ALERTS_ID_SAMPLE_URL           = `/api/alerts/%s/sample`
+	ALERTS_VALIDATE_DISPATCHER_URL = `/api/alerts/validate/dispatcher`
+	ALERTS_VALIDATE_CONSUMER_URL   = `/api/alerts/validate/consumer`
+	USER_PREFERENCES_URL           = `/api/userpreferences`
+	USER_PREFERENCES_LIST_URL      = `/api/userpreferences/list`
+	USER_PREFERENCES_ID_URL        = `/api/userpreferences/%s`
+	LIST_URL                       = `/api/list`
 	// Special APIs for installing licenses
 	LICENSE_INIT_UPLOAD = `/license`
 	LICENSE_INIT_STATUS = `/license/status`

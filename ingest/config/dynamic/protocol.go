@@ -14,9 +14,6 @@ import "uuid"
 // session.  They live here rather than in the rpc package because rpc moves bytes and
 // knows nothing about configuration, and they live here rather than in either endpoint
 // because both ends have to agree on them.
-// RPCPath is where a webserver serves the ingester facing websocket.  It is part of the
-// protocol rather than a deployment detail, both ends have to agree on it.
-const RPCPath = `/api/ingester/hosted`
 
 const (
 	// MethodRegisterKinds is called by an ingester once per connection to declare

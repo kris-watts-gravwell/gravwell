@@ -24,6 +24,7 @@ import (
 
 	"uuid"
 
+	"github.com/gravwell/gravwell/v4/client"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/rpc"
 	"github.com/gravwell/gravwell/v4/ingest/log"
 )
@@ -43,8 +44,6 @@ const (
 	// sessionDrainTimeout is how long a closed session is given to finish the work it
 	// still had running before it is abandoned.  It bounds how long Close can take.
 	sessionDrainTimeout = 10 * time.Second
-
-	rpcPath = `/api/ingester/hosted`
 )
 
 // backoff produces the wait after n consecutive failures, capped and jittered.
@@ -89,7 +88,10 @@ func (dcm *DynamicConfigManager) run() {
 			}
 			continue
 		}
-		endpoint.Path = rpcPath
+		// the route is part of the protocol rather than a deployment detail, so it comes
+		// from the one place that defines it and is not restated here: a second copy of a
+		// path both ends have to agree on is a path they can end up disagreeing about
+		endpoint.Path = client.INGESTERS_CONTROL_URL
 
 		sess, err := dcm.dial(endpoint.String())
 		if err != nil {
@@ -160,7 +162,7 @@ func (dcm *DynamicConfigManager) dial(endpoint string) (*rpc.Session, error) {
 	defer cf()
 	return rpc.Dial(ctx, rpc.ClientConfig{
 		Webserver: endpoint,
-		Path:      RPCPath,
+		Path:      client.INGESTERS_CONTROL_URL,
 		Token:     dcm.Auth_Token,
 		Class:     dcm.Class,
 		ID:        dcm.guid,

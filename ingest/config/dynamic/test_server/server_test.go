@@ -26,6 +26,7 @@ import (
 
 	"uuid"
 
+	"github.com/gravwell/gravwell/v4/client"
 	"github.com/gravwell/gravwell/v4/hosted/plugins/sqs"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/rpc"
@@ -89,7 +90,7 @@ func (h *harness) dial(t *testing.T, mux *rpc.Mux) *rpc.Session {
 	defer cf()
 	s, err := rpc.Dial(ctx, rpc.ClientConfig{
 		Webserver:    h.ts.URL,
-		Path:         RPCPath,
+		Path:         client.INGESTERS_CONTROL_URL,
 		Token:        testSecret,
 		ID:           uuid.New(),
 		Class:        `test`,
@@ -110,7 +111,7 @@ func (h *harness) dialAs(t *testing.T, class string) *rpc.Session {
 	defer cf()
 	s, err := rpc.Dial(ctx, rpc.ClientConfig{
 		Webserver:    h.ts.URL,
-		Path:         RPCPath,
+		Path:         client.INGESTERS_CONTROL_URL,
 		Token:        testSecret,
 		ID:           uuid.New(),
 		Class:        class,
@@ -535,7 +536,7 @@ func TestRPCRequiresTheToken(t *testing.T) {
 	ctx, cf := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cf()
 	if s, err := rpc.Dial(ctx, rpc.ClientConfig{
-		Webserver: h.ts.URL, Path: RPCPath, Token: `the-wrong-secret`, PingInterval: -1,
+		Webserver: h.ts.URL, Path: client.INGESTERS_CONTROL_URL, Token: `the-wrong-secret`, PingInterval: -1,
 	}); err == nil {
 		s.Close()
 		t.Fatal(`an ingester with the wrong secret connected`)
@@ -851,7 +852,7 @@ func TestPushRespectsAssignment(t *testing.T) {
 		ctx, cf := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cf()
 		s, err := rpc.Dial(ctx, rpc.ClientConfig{
-			Webserver: h.ts.URL, Path: RPCPath, Token: testSecret,
+			Webserver: h.ts.URL, Path: client.INGESTERS_CONTROL_URL, Token: testSecret,
 			ID: uuid.New(), Class: class, Handlers: mux, PingInterval: -1,
 		})
 		if err != nil {

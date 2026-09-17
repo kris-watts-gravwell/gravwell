@@ -117,14 +117,42 @@ func versionOf(md *dynamic.RunnerMetadata) string {
 	return md.Version.String()
 }
 
-// statusView is one ingester's report about one runner, as the detail panel draws it.
+// statusView is one ingester's standing with one runner, as the detail panel draws it.
+//
+// It covers both halves of the question.  Reported is what that ingester last said, and
+// an ingester the runner is tasked to but which has never said anything gets a row too:
+// silence from a machine that is meant to be running something is a fact worth seeing,
+// and it is the only thing there is to see while a fleet is offline.
 type statusView struct {
-	Ingester string
-	Class    string
-	State    string // ok or bad
-	Error    string
-	Since    string
-	Updated  string
+	Ingester  string
+	Class     string
+	State     string // ok, bad, or unknown when nothing has been reported
+	Error     string
+	Since     string
+	Updated   string
+	Reported  bool
+	Connected bool
+}
+
+// taskedTo is every ingester the server knows of that this runner is meant for.
+//
+// It is answered from what ingesters have registered, which is on disk, rather than from
+// who happens to be connected.  That is the whole point: a runner is tasked to an ingester
+// the moment the assignment matches, and an operator needs to see that whether or not the
+// ingester is up.  Without it a configuration created while a fleet is offline looks like
+// it is going nowhere.
+//
+// The rule is dynamic.RunnerQuery.Matches, the same one the ingester's own poll uses, so
+// what the interface says a runner is tasked to is what the ingester would actually be
+// handed.
+func taskedTo(rd dynamic.RunnerDefinition, known []Ingester) (r []Ingester) {
+	for _, ing := range known {
+		q := dynamic.RunnerQuery{ID: ing.UUID, Class: ing.Class, Kinds: ing.Kinds}
+		if q.Matches(rd) {
+			r = append(r, ing)
+		}
+	}
+	return
 }
 
 // statusStates are the three things the interface can say about a runner, and the order
@@ -142,10 +170,7 @@ const (
 // One ingester failing is the whole runner failing.  A configuration that four ingesters
 // accept and a fifth rejects is a broken configuration, and averaging that away is how a
 // green screen ends up lying to somebody.
-func rollUp(rows []StatusRow) (state, detail string) {
-	if len(rows) == 0 {
-		return stateUnknown, `no ingester has reported on this runner`
-	}
+func rollUp(rows []StatusRow, tasked int, connected int) (state, detail string) {
 	var bad int
 	var first string
 	for _, r := range rows {
@@ -157,13 +182,31 @@ func rollUp(rows []StatusRow) (state, detail string) {
 			first = r.Error
 		}
 	}
-	if bad == 0 {
-		return stateOK, fmt.Sprintf("accepted by %s", plural(len(rows), `ingester`))
+	// a stale report is still the truth about what that ingester last made of this, but
+	// it is not news, and reading "accepted" next to an ingester that has been down for a
+	// week is how a screen ends up lying
+	stale := ``
+	if connected == 0 && (tasked > 0 || len(rows) > 0) {
+		stale = ` · none connected`
 	}
-	if bad == len(rows) && bad == 1 {
-		return stateBad, first
+
+	switch {
+	case bad == 1 && len(rows) == 1:
+		return stateBad, first + stale
+	case bad > 0:
+		return stateBad, fmt.Sprintf("%d of %s rejected it: %s%s", bad, plural(len(rows), `report`), first, stale)
+	case tasked == 0 && len(rows) == 0:
+		// not a silence to wait out: nothing that has registered could run this, so
+		// either the assignment names something that is not there or no ingester
+		// advertising this kind has ever connected
+		return stateUnknown, `no registered ingester matches this assignment`
+	case len(rows) == 0:
+		return stateUnknown, fmt.Sprintf("tasked to %s, none has reported yet%s",
+			plural(tasked, `ingester`), stale)
+	case len(rows) < tasked:
+		return stateOK, fmt.Sprintf("accepted by %d of %s%s", len(rows), plural(tasked, `tasked ingester`), stale)
 	}
-	return stateBad, fmt.Sprintf("%d of %s rejected it: %s", bad, plural(len(rows), `ingester`), first)
+	return stateOK, fmt.Sprintf("accepted by %s%s", plural(len(rows), `ingester`), stale)
 }
 
 // plural renders a count with its noun, so the interface does not say "1 ingesters".
@@ -297,6 +340,14 @@ func (u *UI) runners(w http.ResponseWriter, r *http.Request) {
 	for _, st := range statuses {
 		byRunner[st.Runner] = append(byRunner[st.Runner], st)
 	}
+	// who the server knows about, from the registrations on disk rather than from who is
+	// connected, so a runner still says where it is meant to go while a fleet is down
+	known, err := u.store.Ingesters()
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	live := u.connectedSet()
 	// a configured runner carries no metadata of its own, it was built from a form.  The
 	// icon belongs to its kind, so it is looked up rather than stored twice.
 	meta, err := u.store.KindMetadata()
@@ -313,7 +364,8 @@ func (u *UI) runners(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]runnerView, 0, len(runners))
 	for _, rd := range runners {
-		state, detail := rollUp(byRunner[rd.UUID])
+		tasked := taskedTo(rd, known)
+		state, detail := rollUp(byRunner[rd.UUID], len(tasked), countLive(tasked, live))
 		rv := runnerView{
 			UUID:   rd.UUID.String(),
 			Kind:   rd.Kind,
@@ -325,6 +377,26 @@ func (u *UI) runners(w http.ResponseWriter, r *http.Request) {
 		out = append(out, rv)
 	}
 	u.render(w, `runners`, out)
+}
+
+// connectedSet is the ingesters with a session right now, for telling a live report from
+// the last thing a machine said before it went away.
+func (u *UI) connectedSet() map[uuid.UUID]bool {
+	live := map[uuid.UUID]bool{}
+	for _, s := range u.api.Connected() {
+		live[s.ID()] = true
+	}
+	return live
+}
+
+// countLive is how many of a set are currently connected.
+func countLive(set []Ingester, live map[uuid.UUID]bool) (n int) {
+	for _, ing := range set {
+		if live[ing.UUID] {
+			n++
+		}
+	}
+	return
 }
 
 // runnerStatus draws the detail panel for one runner: every ingester that has reported on
@@ -341,28 +413,57 @@ func (u *UI) runnerStatus(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
+	known, err := u.store.Ingesters()
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
 	// the class an ingester authenticated with is worth showing next to its UUID, it is
 	// usually the thing an operator actually recognizes
 	classes := map[uuid.UUID]string{}
-	if known, lerr := u.store.Ingesters(); lerr == nil {
-		for _, ing := range known {
-			classes[ing.UUID] = ing.Class
-		}
+	for _, ing := range known {
+		classes[ing.UUID] = ing.Class
 	}
+	live := u.connectedSet()
+
 	out := make([]statusView, 0, len(rows))
+	reported := map[uuid.UUID]bool{}
 	for _, row := range rows {
+		reported[row.Ingester] = true
 		sv := statusView{
-			Ingester: row.Ingester.String(),
-			Class:    classes[row.Ingester],
-			State:    stateOK,
-			Error:    row.Error,
-			Since:    ago(row.Since),
-			Updated:  ago(row.Updated),
+			Ingester:  row.Ingester.String(),
+			Class:     classes[row.Ingester],
+			State:     stateOK,
+			Error:     row.Error,
+			Since:     ago(row.Since),
+			Updated:   ago(row.Updated),
+			Reported:  true,
+			Connected: live[row.Ingester],
 		}
 		if !row.OK() {
 			sv.State = stateBad
 		}
 		out = append(out, sv)
+	}
+
+	// and the ones this runner is tasked to that have said nothing.  Reading the runner
+	// back rather than trusting the status rows is what makes this work offline: the
+	// assignment and the registrations are both on disk, so the set can be worked out with
+	// nothing connected at all.
+	if rd, rerr := u.store.Runner(id); rerr == nil {
+		for _, ing := range taskedTo(rd, known) {
+			if reported[ing.UUID] {
+				continue
+			}
+			out = append(out, statusView{
+				Ingester:  ing.UUID.String(),
+				Class:     ing.Class,
+				State:     stateUnknown,
+				Since:     ago(ing.LastSeen),
+				Updated:   `never`,
+				Connected: live[ing.UUID],
+			})
+		}
 	}
 	u.render(w, `runnerstatus`, out)
 }
@@ -374,19 +475,33 @@ func (u *UI) status(w http.ResponseWriter, r *http.Request) {
 // ingesters renders the dropdown behind the connection chip: who is connected right now,
 // with the UUID and class each one authenticated with.
 func (u *UI) ingesters(w http.ResponseWriter, r *http.Request) {
-	live := map[uuid.UUID]bool{}
-	for _, s := range u.api.Connected() {
-		live[s.ID()] = true
-	}
+	live := u.connectedSet()
 	known, err := u.store.Ingesters()
 	if err != nil {
 		u.fail(w, err)
 		return
 	}
+	// how much each one has been given to run.  Answered from the stored runners and the
+	// stored registrations, so it is just as true of an ingester that is switched off:
+	// "this box is meant to be running four things" is the question an operator opens
+	// this list to ask, and it does not stop mattering when the box goes away.
+	runners, err := u.store.Runners()
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	tasked := map[uuid.UUID]int{}
+	for _, rd := range runners {
+		for _, ing := range taskedTo(rd, known) {
+			tasked[ing.UUID]++
+		}
+	}
+
 	type row struct {
 		UUID      string
 		Class     string
 		Kinds     string
+		Tasked    int
 		Connected bool
 		LastSeen  string
 	}
@@ -396,6 +511,7 @@ func (u *UI) ingesters(w http.ResponseWriter, r *http.Request) {
 			UUID:      ing.UUID.String(),
 			Class:     ing.Class,
 			Kinds:     strings.Join(ing.Kinds, `, `),
+			Tasked:    tasked[ing.UUID],
 			Connected: live[ing.UUID],
 			LastSeen:  ing.LastSeen.Format(time.RFC3339),
 		})

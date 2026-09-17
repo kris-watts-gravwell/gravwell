@@ -17,6 +17,7 @@ import (
 
 	"uuid"
 
+	"github.com/gravwell/gravwell/v4/client"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/rpc"
 )
@@ -36,7 +37,7 @@ func slowIngester(t *testing.T, h *harness, delay time.Duration) uuid.UUID {
 	ctx, cf := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cf()
 	s, err := rpc.Dial(ctx, rpc.ClientConfig{
-		Webserver: h.ts.URL, Path: RPCPath, Token: testSecret,
+		Webserver: h.ts.URL, Path: client.INGESTERS_CONTROL_URL, Token: testSecret,
 		ID: id, Class: `edge`, Handlers: mux, PingInterval: -1,
 	})
 	if err != nil {

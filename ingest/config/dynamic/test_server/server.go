@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gravwell/gravwell/v4/client"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/rpc"
 	"github.com/gravwell/gravwell/v4/ingest/log"
 )
@@ -62,7 +63,7 @@ func NewServer(store *Store, secret string, lgr *log.Logger) (h http.Handler, ap
 	}
 
 	smux := http.NewServeMux()
-	smux.Handle(RPCPath, rsrv)
+	smux.Handle(client.INGESTERS_CONTROL_URL, rsrv)
 	ui.Register(smux)
 	return smux, api, nil
 }

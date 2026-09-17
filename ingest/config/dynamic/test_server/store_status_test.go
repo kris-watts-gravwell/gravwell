@@ -180,25 +180,48 @@ func TestDeleteRunnerClearsStatuses(t *testing.T) {
 }
 
 // TestRollUp covers the reduction the list draws from.  One ingester failing is the whole
-// runner failing, and never having been reported on is not the same as being fine.
+// runner failing, never having been reported on is not the same as being fine, and a
+// report from a machine that is no longer connected is the last thing it said rather than
+// news.
 func TestRollUp(t *testing.T) {
 	ok := StatusRow{}
 	bad := StatusRow{Error: `missing unit in duration "3"`}
 
-	if state, detail := rollUp(nil); state != stateUnknown || detail == `` {
-		t.Errorf("no reports rolled up to %q %q", state, detail)
+	// nothing registered can run it: not a silence to wait out, an assignment that points
+	// at nothing
+	if state, detail := rollUp(nil, 0, 0); state != stateUnknown || !strings.Contains(detail, `no registered ingester`) {
+		t.Errorf("an unmatchable assignment rolled up to %q %q", state, detail)
 	}
-	if state, _ := rollUp([]StatusRow{ok, ok}); state != stateOK {
+	// tasked but silent, which is what a runner created while the fleet is down looks
+	// like.  The server knows where it is meant to go and says so.
+	state, detail := rollUp(nil, 2, 0)
+	if state != stateUnknown || !strings.Contains(detail, `tasked to 2 ingesters`) {
+		t.Errorf("a tasked but unreported runner rolled up to %q %q", state, detail)
+	}
+	if !strings.Contains(detail, `none connected`) {
+		t.Errorf("the detail does not say nothing is connected: %q", detail)
+	}
+
+	if state, _ = rollUp([]StatusRow{ok, ok}, 2, 2); state != stateOK {
 		t.Errorf("two clean reports rolled up to %q", state)
 	}
-	state, detail := rollUp([]StatusRow{bad})
-	if state != stateBad || detail != bad.Error {
+	// a report that is not backed by a live connection is still shown, but marked
+	if _, detail = rollUp([]StatusRow{ok}, 1, 0); !strings.Contains(detail, `none connected`) {
+		t.Errorf("a stale acceptance reads as live: %q", detail)
+	}
+	// partially reported
+	if state, detail = rollUp([]StatusRow{ok}, 3, 3); state != stateOK || !strings.Contains(detail, `1 of 3`) {
+		t.Errorf("a partly reported runner rolled up to %q %q", state, detail)
+	}
+
+	state, detail = rollUp([]StatusRow{bad}, 1, 1)
+	if state != stateBad || !strings.Contains(detail, bad.Error) {
 		t.Errorf("a single failure rolled up to %q %q, want the plugin's own words", state, detail)
 	}
 	// the mixed case is the one that matters, a green light here would be a lie
-	if state, detail = rollUp([]StatusRow{ok, bad, ok}); state != stateBad {
+	if state, detail = rollUp([]StatusRow{ok, bad, ok}, 3, 3); state != stateBad {
 		t.Errorf("one failure among three rolled up to %q, want %q", state, stateBad)
-	} else if !strings.Contains(detail, `1 of 3 ingesters`) || !strings.Contains(detail, bad.Error) {
+	} else if !strings.Contains(detail, `1 of 3 reports`) || !strings.Contains(detail, bad.Error) {
 		t.Errorf("the mixed summary does not say who or why: %q", detail)
 	}
 }

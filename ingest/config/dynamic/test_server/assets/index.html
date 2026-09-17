@@ -79,17 +79,21 @@
 
 {{define "runnerstatus"}}
 {{- if not . -}}
-<p class="empty">No ingester has reported on this runner yet.</p>
+<p class="empty">No registered ingester matches this runner's assignment, so nothing is tasked with running it.</p>
 {{- else -}}
 <table class="ing">
 	<thead><tr><th></th><th>Ingester</th><th>Class</th><th>Reported</th><th>In this state</th></tr></thead>
+	{{- /* a row with nothing reported is an ingester this runner is tasked to that has
+	       not spoken.  It comes from the stored registrations, so it is there whether or
+	       not anything is connected. */ -}}
 	<tbody>
 	{{- range . }}
 	<tr>
-		<td><span class="dot {{.State}}" title="{{if .Error}}rejected{{else}}accepted{{end}}"></span></td>
-		<td class="mono">{{.Ingester}}</td>
+		<td><span class="dot {{.State}}"
+			title="{{if not .Reported}}tasked, nothing reported{{else if .Error}}rejected{{else}}accepted{{end}}"></span></td>
+		<td class="mono">{{.Ingester}}{{if not .Connected}} <span class="muted">(offline)</span>{{end}}</td>
 		<td>{{if .Class}}<span class="chip">{{.Class}}</span>{{else}}<span class="muted">none</span>{{end}}</td>
-		<td class="muted">{{.Updated}}</td>
+		<td class="muted">{{if .Reported}}{{.Updated}}{{else}}not reported{{end}}</td>
 		<td class="muted">{{.Since}}</td>
 	</tr>
 	{{- if .Error }}
@@ -115,7 +119,7 @@
 <p class="empty">No ingester has ever registered with this server.</p>
 {{- else -}}
 <table class="ing">
-	<thead><tr><th></th><th>UUID</th><th>Class</th><th>Kinds</th><th>Last seen</th></tr></thead>
+	<thead><tr><th></th><th>UUID</th><th>Class</th><th>Kinds</th><th>Runners</th><th>Last seen</th></tr></thead>
 	<tbody>
 	{{- range . }}
 	<tr>
@@ -124,6 +128,7 @@
 		<td class="mono idcell">{{template "ingestericon" .}}{{.UUID}}</td>
 		<td>{{if .Class}}<span class="chip">{{.Class}}</span>{{else}}<span class="muted">none</span>{{end}}</td>
 		<td class="muted">{{if .Kinds}}{{.Kinds}}{{else}}none{{end}}</td>
+		<td class="muted">{{if .Tasked}}{{.Tasked}}{{else}}none{{end}}</td>
 		<td class="muted">{{.LastSeen}}</td>
 	</tr>
 	{{- end }}
@@ -174,7 +179,7 @@
 				</label>
 				<label>
 					<span class="lbl">Classes</span>
-					<span class="hint">Classes seen from connected ingesters.</span>
+					<span class="hint">Every class an ingester has ever registered with, whether or not it is connected now.</span>
 					{{- if .Classes }}
 					<select name="assign.class" multiple size="5">
 						{{- range .Classes }}
