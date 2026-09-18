@@ -9,319 +9,215 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
+	"sort"
+	"sync"
 	"time"
 
 	"uuid"
 
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
-
-	// pure Go, SQLite machine translated rather than linked, so this builds with no C
-	// toolchain and no cgo on any platform the rest of the tree targets
-	_ "github.com/ncruces/go-sqlite3/driver"
+	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/server"
 )
 
-// schema is applied on every open, so pointing the server at a new file just works.
+// Store is an in-memory implementation of server.Store.
 //
-// The definition column carries the whole RunnerDefinition as JSON and is the record of
-// record.  The other columns are duplicated out of it so that the database can enforce
-// what matters and the UI can list things without decoding every row: one registration
-// per kind, and one runner per UUID with kind and name unique together, which is the same
-// rule the ingester's own manager applies.
-const schema = `
-CREATE TABLE IF NOT EXISTS kinds (
-	ingester   TEXT NOT NULL,
-	kind       TEXT NOT NULL,
-	singleton  INTEGER NOT NULL DEFAULT 0,
-	definition TEXT NOT NULL,
-	updated    INTEGER NOT NULL,
-	PRIMARY KEY (ingester, kind)
-);
-CREATE TABLE IF NOT EXISTS runners (
-	uuid       TEXT PRIMARY KEY,
-	kind       TEXT NOT NULL,
-	name       TEXT NOT NULL,
-	definition TEXT NOT NULL,
-	updated    INTEGER NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS runners_kind_name ON runners(kind, name);
-CREATE TABLE IF NOT EXISTS ingesters (
-	uuid      TEXT PRIMARY KEY,
-	class     TEXT NOT NULL DEFAULT '',
-	last_seen INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS runner_status (
-	runner   TEXT NOT NULL,
-	ingester TEXT NOT NULL,
-	kind     TEXT NOT NULL DEFAULT '',
-	name     TEXT NOT NULL DEFAULT '',
-	error    TEXT NOT NULL DEFAULT '',
-	since    INTEGER NOT NULL,
-	updated  INTEGER NOT NULL,
-	PRIMARY KEY (runner, ingester)
-);
-CREATE INDEX IF NOT EXISTS runner_status_ingester ON runner_status(ingester);
-`
-
-var (
-	ErrNotFound = errors.New("not found")
-)
-
-// Store is the SQLite backing for registrations and configured runners.
+// Nothing is persisted.  This is a rig for exercising the protocol and the interface, and a
+// rig that forgets everything when it stops is the honest shape for that: a fresh process
+// is a fresh fleet, and the state an operator is looking at is always the state this run
+// produced rather than something left over from a build two weeks ago.  It also means there
+// is no schema to migrate every time a wire type grows a field, and no database file to go
+// stale against the code that reads it.
+//
+// The rules it has to honour are documented on server.Store and checked by server.TestStore,
+// which TestStoreConformance runs.  The comments here explain only how this particular
+// backend goes about them, and two of those are worth reading before changing anything:
+//
+//   - Definitions are deep copied through JSON on the way in and on the way out.  That is
+//     not paranoia about aliasing, though it handles that too.  A definition reaches a real
+//     server as JSON and is kept as JSON, so every whole number in one is a float64 by the
+//     time it is rendered to a config file.  Handing back the caller's own Go values would
+//     make this rig the one place in the system where that is not true, and it would hide
+//     exactly the class of bug that only shows up against a real webserver.  See
+//     TestIniWholeNumberAfterJSON in the dynamic package.
+//   - Kind and Name uniqueness is enforced by hand.  The SQL version of this store got it
+//     free from a unique index, which made it invisible; here it is a check that can be
+//     deleted by accident, so it has a name and a test.
 type Store struct {
-	db *sql.DB
+	mtx sync.RWMutex
+
+	// ingesters is what each ingester said about itself when it last registered
+	ingesters map[uuid.UUID]ingesterRecord
+
+	// kinds is what each ingester says it can run, by ingester then kind.  Keyed by
+	// ingester because two of them may advertise one kind from different builds and a
+	// server has to be able to tell them apart.
+	kinds map[uuid.UUID]map[string][]byte
+
+	// runners is every configured runner, by its own UUID
+	runners map[uuid.UUID][]byte
+
+	// statuses is what each ingester last said about each runner, by ingester then runner.
+	// Nested that way round because a report replaces one ingester's whole set.
+	statuses map[uuid.UUID]map[uuid.UUID]server.StatusRow
 }
 
-// OpenStore opens or creates the database at pth.
-func OpenStore(pth string) (s *Store, err error) {
-	if pth == `` {
-		return nil, errors.New("empty storage path")
-	}
-	var db *sql.DB
-	if db, err = sql.Open(`sqlite3`, storeDSN(pth)); err != nil {
-		return nil, fmt.Errorf("failed to open %s %w", pth, err)
-	}
-	if err = db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to open %s %w", pth, err)
-	}
-	if _, err = db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to apply schema %w", err)
-	}
-	return &Store{db: db}, nil
+// ingesterRecord is one ingester as this store remembers it.  registered orders the
+// most-recent-wins tiebreak in Kinds, and is the same instant as LastSeen rather than a
+// second clock that could disagree with it.
+type ingesterRecord struct {
+	class      string
+	registered time.Time
 }
 
-// storeDSN builds the data source name for the database at pth.
-//
-// The driver only reads parameters off a "file:" URI, a bare path is handed to SQLite
-// verbatim, so the path has to be wrapped rather than have a query string stapled onto
-// the end of it: that would open a database whose file name really does end in
-// "?_pragma=...".  Building it through url.URL is also what escapes a path holding a
-// question mark or a hash, which would otherwise be read as the start of the query.
-//
-// busy_timeout keeps the UI and the RPC side from tripping over each other, they are both
-// writing to one file.
-func storeDSN(pth string) string {
-	q := url.Values{}
-	q.Add(`_pragma`, `busy_timeout(5000)`)
-	q.Add(`_pragma`, `foreign_keys(1)`)
-	u := url.URL{Scheme: `file`, OmitHost: true, Path: pth, RawQuery: q.Encode()}
-	return u.String()
-}
+var _ server.Store = (*Store)(nil)
 
-func (s *Store) Close() error {
-	if s == nil || s.db == nil {
-		return nil
+// NewStore builds an empty store.
+func NewStore() *Store {
+	return &Store{
+		ingesters: map[uuid.UUID]ingesterRecord{},
+		kinds:     map[uuid.UUID]map[string][]byte{},
+		runners:   map[uuid.UUID][]byte{},
+		statuses:  map[uuid.UUID]map[uuid.UUID]server.StatusRow{},
 	}
-	return s.db.Close()
 }
 
-// ReplaceKinds records everything one ingester says it can run.
-//
-// The whole set is replaced rather than merged.  An ingester sends its complete list on
-// every connection, so replacing is what lets a kind that has been dropped from a build
-// actually disappear instead of lingering forever.
-//
-// Registrations are keyed by the ingester's UUID.  Two ingesters may advertise the same
-// kind backed by different builds, and a webserver has to be able to tell them apart to
-// know who is able to run what.
-func (s *Store) ReplaceKinds(ingester uuid.UUID, class string, kinds []dynamic.RunnerDefinition) (err error) {
+// Close exists so a caller can treat this like anything else that holds resources.  It
+// holds none.
+func (s *Store) Close() error { return nil }
+
+// encode and decode are the JSON round trip every definition makes, see the note on Store.
+func encode(rd dynamic.RunnerDefinition) ([]byte, error) {
+	blob, err := json.Marshal(rd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode definition %w", err)
+	}
+	return blob, nil
+}
+
+func decode(blob []byte) (rd dynamic.RunnerDefinition, err error) {
+	if err = json.Unmarshal(blob, &rd); err != nil {
+		return rd, fmt.Errorf("failed to decode a stored definition %w", err)
+	}
+	return
+}
+
+// ReplaceKinds records the complete set one ingester says it can run, and stamps that
+// ingester's class and last-seen.  The whole set is replaced rather than merged, which is
+// what lets a kind dropped from a build actually disappear.
+func (s *Store) ReplaceKinds(ingester uuid.UUID, class string, kinds []dynamic.RunnerDefinition) error {
 	if ingester == uuid.Nil() {
 		return errors.New("registration has no ingester UUID")
 	}
-	var tx *sql.Tx
-	if tx, err = s.db.Begin(); err != nil {
-		return fmt.Errorf("failed to start a transaction %w", err)
+	// build the replacement before touching anything, so a bad kind half way down the list
+	// leaves the previous registration intact rather than half of a new one
+	next := make(map[string][]byte, len(kinds))
+	for _, rd := range kinds {
+		rd, err := server.NormalizeKind(rd)
+		if err != nil {
+			return err
+		}
+		blob, err := encode(rd)
+		if err != nil {
+			return err
+		}
+		next[rd.Kind] = blob
 	}
-	defer tx.Rollback() // a no-op once committed, and the undo if anything below fails
 
-	if _, err = tx.Exec(`DELETE FROM kinds WHERE ingester = ?`, ingester.String()); err != nil {
-		return fmt.Errorf("failed to clear registrations %w", err)
-	}
-	now := time.Now().UnixNano()
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	s.kinds[ingester] = next
 	// remember the ingester itself, which is what lets the interface offer a real list of
 	// UUIDs and classes to assign to rather than asking an operator to type them
-	if _, err = tx.Exec(`INSERT INTO ingesters (uuid, class, last_seen) VALUES (?,?,?)
-		ON CONFLICT(uuid) DO UPDATE SET class=excluded.class, last_seen=excluded.last_seen`,
-		ingester.String(), class, now); err != nil {
-		return fmt.Errorf("failed to record the ingester %w", err)
-	}
-	for _, rd := range kinds {
-		if rd.Kind == `` {
-			return errors.New("registration has no kind")
-		}
-		// a registration describes a type, it carries no identity, strip anything that
-		// wandered in so the stored prototype is clean
-		rd.Name = ``
-		rd.UUID = uuid.Nil()
-		var blob []byte
-		if blob, err = json.Marshal(rd); err != nil {
-			return fmt.Errorf("failed to encode definition %w", err)
-		}
-		if _, err = tx.Exec(`INSERT INTO kinds (ingester, kind, singleton, definition, updated)
-			VALUES (?,?,?,?,?)`,
-			ingester.String(), rd.Kind, rd.Singleton, string(blob), now); err != nil {
-			return fmt.Errorf("failed to store kind %s %w", rd.Kind, err)
-		}
-	}
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit registrations %w", err)
-	}
-	return
+	s.ingesters[ingester] = ingesterRecord{class: class, registered: time.Now()}
+	return nil
 }
 
 // IngesterKinds lists what one ingester says it can run.
 func (s *Store) IngesterKinds(ingester uuid.UUID) (r []dynamic.RunnerDefinition, err error) {
-	var rows *sql.Rows
-	if rows, err = s.db.Query(`SELECT definition FROM kinds WHERE ingester = ? ORDER BY kind ASC`,
-		ingester.String()); err != nil {
-		return nil, fmt.Errorf("failed to list kinds %w", err)
-	}
-	defer rows.Close()
-	return scanDefinitions(rows)
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+	return s.definitionsLocked(s.kinds[ingester])
 }
 
-// Ingester is what the interface needs to offer an assignment target.
-type Ingester struct {
-	UUID     uuid.UUID
-	Class    string
-	Kinds    []string
-	LastSeen time.Time
-}
-
-// Ingesters lists every ingester that has ever registered, newest first, with the kinds
-// each one advertised.
-func (s *Store) Ingesters() (r []Ingester, err error) {
-	var rows *sql.Rows
-	if rows, err = s.db.Query(`SELECT uuid, class, last_seen FROM ingesters
-		ORDER BY last_seen DESC`); err != nil {
-		return nil, fmt.Errorf("failed to list ingesters %w", err)
+// definitionsLocked decodes a kind set in name order.  The caller holds the lock.
+func (s *Store) definitionsLocked(set map[string][]byte) (r []dynamic.RunnerDefinition, err error) {
+	names := make([]string, 0, len(set))
+	for kind := range set {
+		names = append(names, kind)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var raw, class string
-		var seen int64
-		if err = rows.Scan(&raw, &class, &seen); err != nil {
-			return
+	sort.Strings(names)
+	for _, kind := range names {
+		rd, derr := decode(set[kind])
+		if derr != nil {
+			return nil, derr
 		}
-		id, perr := uuid.Parse(raw)
-		if perr != nil {
-			continue // a row we cannot make sense of is not worth failing the page over
-		}
-		r = append(r, Ingester{UUID: id, Class: class, LastSeen: time.Unix(0, seen)})
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	// fill in the kinds, one small query rather than a join so the decode stays simple
-	for i := range r {
-		var kinds []string
-		if kinds, err = s.ingesterKindNames(r[i].UUID); err != nil {
-			return nil, err
-		}
-		r[i].Kinds = kinds
+		r = append(r, rd)
 	}
 	return
 }
 
-// KindIngesters lists the ingesters that have registered a given kind, which is the set
-// an operator may pin a configuration of that kind to.  Pinning to an ingester that
-// cannot run the kind would produce a configuration that is never delivered.
-func (s *Store) KindIngesters(kind string) (r []Ingester, err error) {
-	var rows *sql.Rows
-	if rows, err = s.db.Query(`SELECT i.uuid, i.class, i.last_seen
-		FROM ingesters i JOIN kinds k ON k.ingester = i.uuid
-		WHERE k.kind = ? ORDER BY i.last_seen DESC`, kind); err != nil {
-		return nil, fmt.Errorf("failed to list ingesters for %s %w", kind, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var raw, class string
-		var seen int64
-		if err = rows.Scan(&raw, &class, &seen); err != nil {
-			return
-		}
-		if id, perr := uuid.Parse(raw); perr == nil {
-			r = append(r, Ingester{UUID: id, Class: class, LastSeen: time.Unix(0, seen)})
-		}
-	}
-	err = rows.Err()
-	return
-}
-
-// Classes lists the distinct classes that have been seen, so the interface can offer them
-// rather than asking an operator to remember what they called things.
-func (s *Store) Classes() (r []string, err error) {
-	var rows *sql.Rows
-	if rows, err = s.db.Query(`SELECT DISTINCT class FROM ingesters
-		WHERE class != '' ORDER BY class ASC`); err != nil {
-		return nil, fmt.Errorf("failed to list classes %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var c string
-		if err = rows.Scan(&c); err != nil {
-			return
-		}
-		r = append(r, c)
-	}
-	err = rows.Err()
-	return
-}
-
-// ingesterKindNames lists the kind names one ingester advertised.
-func (s *Store) ingesterKindNames(id uuid.UUID) (r []string, err error) {
-	var rows *sql.Rows
-	if rows, err = s.db.Query(`SELECT kind FROM kinds WHERE ingester = ? ORDER BY kind ASC`,
-		id.String()); err != nil {
-		return nil, fmt.Errorf("failed to list kinds %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var k string
-		if err = rows.Scan(&k); err != nil {
-			return
-		}
-		r = append(r, k)
-	}
-	err = rows.Err()
-	return
-}
-
-// Kinds lists the distinct kinds across every ingester, which is what the interface
-// offers to configure.  Two ingesters advertising the same kind collapse to one entry,
-// the most recently registered wins, because the operator is choosing a kind to
-// configure rather than choosing an ingester.
+// Kinds lists the distinct kinds across every ingester, which is what the interface offers
+// to configure.  Two ingesters advertising the same kind collapse to one entry and the most
+// recently registered wins, because the operator is choosing a kind to configure rather
+// than choosing an ingester.  A consumer that needs to tell two builds apart reads
+// IngesterKinds instead.
 func (s *Store) Kinds() (r []dynamic.RunnerDefinition, err error) {
-	var rows *sql.Rows
-	if rows, err = s.db.Query(`SELECT definition FROM kinds
-		WHERE (kind, updated) IN (SELECT kind, MAX(updated) FROM kinds GROUP BY kind)
-		GROUP BY kind ORDER BY kind ASC`); err != nil {
-		return nil, fmt.Errorf("failed to list kinds %w", err)
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+
+	type entry struct {
+		blob []byte
+		when time.Time
 	}
-	defer rows.Close()
-	if r, err = scanDefinitions(rows); err != nil {
-		return nil, fmt.Errorf("failed to list kinds %w", err)
+	best := map[string]entry{}
+	for ingester, set := range s.kinds {
+		when := s.ingesters[ingester].registered
+		for kind, blob := range set {
+			if cur, ok := best[kind]; ok && !when.After(cur.when) {
+				continue
+			}
+			best[kind] = entry{blob: blob, when: when}
+		}
 	}
-	return
+	flat := make(map[string][]byte, len(best))
+	for kind, e := range best {
+		flat[kind] = e.blob
+	}
+	return s.definitionsLocked(flat)
 }
 
-// KindMetadata is the description each kind ships with, keyed by kind.
-//
-// It is read back out of the stored definition rather than kept in columns of its own.
-// The definition is the record of record and metadata is only ever read whole, so a
-// column would buy nothing but a schema migration on every existing database.
-//
-// A kind with no metadata is absent from the map rather than present and empty, so a
-// caller can tell "this plugin describes itself" from "this plugin does not".
+// Kind fetches one registration, preferring the most recently registered where several
+// ingesters have it, the same rule Kinds applies.
+func (s *Store) Kind(kind string) (rd dynamic.RunnerDefinition, err error) {
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+
+	var blob []byte
+	var when time.Time
+	for ingester, set := range s.kinds {
+		cur, ok := set[kind]
+		if !ok {
+			continue
+		}
+		if at := s.ingesters[ingester].registered; blob == nil || at.After(when) {
+			blob, when = cur, at
+		}
+	}
+	if blob == nil {
+		return rd, fmt.Errorf("kind %s %w", kind, server.ErrNotFound)
+	}
+	return decode(blob)
+}
+
+// KindMetadata is the description each kind ships with, keyed by kind.  A kind with no
+// metadata is absent from the map rather than present and empty, so a caller can tell "this
+// plugin describes itself" from "this plugin does not".
 func (s *Store) KindMetadata() (r map[string]*dynamic.RunnerMetadata, err error) {
-	var kinds []dynamic.RunnerDefinition
-	if kinds, err = s.Kinds(); err != nil {
+	kinds, err := s.Kinds()
+	if err != nil {
 		return nil, err
 	}
 	r = make(map[string]*dynamic.RunnerMetadata, len(kinds))
@@ -333,30 +229,109 @@ func (s *Store) KindMetadata() (r map[string]*dynamic.RunnerMetadata, err error)
 	return
 }
 
-// Kind fetches one registration.
-func (s *Store) Kind(kind string) (rd dynamic.RunnerDefinition, err error) {
-	var blob string
-	err = s.db.QueryRow(`SELECT definition FROM kinds WHERE kind = ? ORDER BY updated DESC LIMIT 1`, kind).Scan(&blob)
-	if errors.Is(err, sql.ErrNoRows) {
-		return rd, fmt.Errorf("kind %s %w", kind, ErrNotFound)
-	} else if err != nil {
-		return rd, fmt.Errorf("failed to read kind %s %w", kind, err)
+// Ingesters lists every ingester that has ever registered, newest first, with the kinds
+// each one advertised.
+func (s *Store) Ingesters() (r []server.Ingester, err error) {
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+	for id := range s.ingesters {
+		r = append(r, s.ingesterLocked(id))
 	}
-	if err = json.Unmarshal([]byte(blob), &rd); err != nil {
-		return rd, fmt.Errorf("failed to decode kind %s %w", kind, err)
-	}
+	sortIngesters(r)
 	return
+}
+
+// KindIngesters lists the ingesters that have registered a given kind, which is the set an
+// operator may pin a configuration of that kind to.  Pinning to an ingester that cannot run
+// the kind would produce a configuration that is never delivered.
+func (s *Store) KindIngesters(kind string) (r []server.Ingester, err error) {
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+	for id, set := range s.kinds {
+		if _, ok := set[kind]; !ok {
+			continue
+		}
+		if _, known := s.ingesters[id]; !known {
+			continue
+		}
+		r = append(r, s.ingesterLocked(id))
+	}
+	sortIngesters(r)
+	return
+}
+
+// ingesterLocked assembles one ingester with the kind names it advertised.  The caller
+// holds the lock.
+func (s *Store) ingesterLocked(id uuid.UUID) server.Ingester {
+	rec := s.ingesters[id]
+	ing := server.Ingester{UUID: id, Class: rec.class, LastSeen: rec.registered}
+	for kind := range s.kinds[id] {
+		ing.Kinds = append(ing.Kinds, kind)
+	}
+	sort.Strings(ing.Kinds)
+	return ing
+}
+
+// sortIngesters puts the newest first, with the UUID as the tiebreak so that two ingesters
+// registered in the same instant do not swap places between two polls of the same page.
+func sortIngesters(r []server.Ingester) {
+	sort.Slice(r, func(i, j int) bool {
+		if !r[i].LastSeen.Equal(r[j].LastSeen) {
+			return r[i].LastSeen.After(r[j].LastSeen)
+		}
+		return r[i].UUID.String() < r[j].UUID.String()
+	})
+}
+
+// Classes lists the distinct classes that have been seen, so the interface can offer them
+// rather than asking an operator to remember what they called things.
+func (s *Store) Classes() (r []string, err error) {
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+	seen := map[string]bool{}
+	for _, rec := range s.ingesters {
+		if rec.class == `` || seen[rec.class] {
+			continue
+		}
+		seen[rec.class] = true
+		r = append(r, rec.class)
+	}
+	sort.Strings(r)
+	return
+}
+
+// ForgetIngester removes the registrations, the statuses and the ingester record held under
+// one UUID.  Runners keep their pins, see server.Store.
+//
+// The cleanup happens whether or not there was an ingester record, and ErrNotFound is
+// decided after it rather than instead of it: rows left under a UUID with no record are
+// exactly what an operator reaches for this to clear, so a path that reported "unknown" and
+// left them behind would fail at the one job that mattered.
+func (s *Store) ForgetIngester(id uuid.UUID) error {
+	if id == uuid.Nil() {
+		return errors.New("no ingester UUID")
+	}
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	_, known := s.ingesters[id]
+	delete(s.kinds, id)
+	delete(s.statuses, id)
+	delete(s.ingesters, id)
+	if !known {
+		return fmt.Errorf("ingester %v %w", id, server.ErrNotFound)
+	}
+	return nil
 }
 
 // PutRunner records a configured runner.  The UUID is the identity, so saving an edit
 // updates in place while a new UUID is a new runner.
 //
-// Metadata is dropped rather than stored.  An icon and a version describe a plugin, not
-// one configuration of it, and the registration already holds them: keeping a copy on
-// every runner would store the same SVG once per configured instance and ship it back
-// down to every ingester on every poll, to say something they already know.  The
-// interface looks a runner's icon up through its kind, see KindMetadata.
-func (s *Store) PutRunner(rd dynamic.RunnerDefinition) (err error) {
+// Metadata is dropped rather than stored.  An icon and a version describe a plugin, not one
+// configuration of it, and the registration already holds them: keeping a copy on every
+// runner would store the same SVG once per configured instance and ship it back down to
+// every ingester on every poll, to say something they already know.  The interface looks a
+// runner's icon up through its kind, see KindMetadata.
+func (s *Store) PutRunner(rd dynamic.RunnerDefinition) error {
 	if rd.Kind == `` {
 		return errors.New("runner has no kind")
 	} else if rd.Name == `` {
@@ -365,98 +340,93 @@ func (s *Store) PutRunner(rd dynamic.RunnerDefinition) (err error) {
 		return errors.New("runner has no UUID")
 	}
 	rd.Metadata = nil // a copy, the caller's definition is untouched
-	var blob []byte
-	if blob, err = json.Marshal(rd); err != nil {
-		return fmt.Errorf("failed to encode runner %w", err)
-	}
-	_, err = s.db.Exec(`INSERT INTO runners (uuid, kind, name, definition, updated)
-		VALUES (?,?,?,?,?)
-		ON CONFLICT(uuid) DO UPDATE SET kind=excluded.kind, name=excluded.name,
-			definition=excluded.definition, updated=excluded.updated`,
-		rd.UUID.String(), rd.Kind, rd.Name, string(blob), time.Now().UnixNano())
+	blob, err := encode(rd)
 	if err != nil {
-		// the kind+name index is what catches two runners of one kind sharing a name
-		return fmt.Errorf("failed to store runner %s/%s %w", rd.Kind, rd.Name, err)
+		return err
 	}
-	return
+
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	if err = s.nameIsFreeLocked(rd); err != nil {
+		return err
+	}
+	s.runners[rd.UUID] = blob
+	return nil
 }
 
-// Runners lists every configured runner, grouped by kind then name so the UI order is
+// nameIsFreeLocked is the kind-and-name uniqueness rule, which a SQL backend gets from a
+// unique index and this one has to check.  It is the same rule the ingester's own manager
+// applies: two runners of one kind sharing a name would render to one config file name and
+// each would overwrite the other.  The caller holds the lock.
+func (s *Store) nameIsFreeLocked(rd dynamic.RunnerDefinition) error {
+	for id, blob := range s.runners {
+		if id == rd.UUID {
+			continue // this is the runner being edited
+		}
+		other, err := decode(blob)
+		if err != nil {
+			return err
+		}
+		if other.Kind == rd.Kind && other.Name == rd.Name {
+			return fmt.Errorf("failed to store runner %s/%s, %v already has that name",
+				rd.Kind, rd.Name, id)
+		}
+	}
+	return nil
+}
+
+// Runners lists every configured runner, ordered by kind then name so the UI order is
 // stable across reloads.
 func (s *Store) Runners() (r []dynamic.RunnerDefinition, err error) {
-	var rows *sql.Rows
-	if rows, err = s.db.Query(`SELECT definition FROM runners ORDER BY kind ASC, name ASC`); err != nil {
-		return nil, fmt.Errorf("failed to list runners %w", err)
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+	for _, blob := range s.runners {
+		rd, derr := decode(blob)
+		if derr != nil {
+			return nil, derr
+		}
+		r = append(r, rd)
 	}
-	defer rows.Close()
-	if r, err = scanDefinitions(rows); err != nil {
-		return nil, fmt.Errorf("failed to list runners %w", err)
-	}
+	sort.Slice(r, func(i, j int) bool {
+		if r[i].Kind != r[j].Kind {
+			return r[i].Kind < r[j].Kind
+		}
+		if r[i].Name != r[j].Name {
+			return r[i].Name < r[j].Name
+		}
+		return r[i].UUID.String() < r[j].UUID.String()
+	})
 	return
 }
 
 // Runner fetches one configured runner by UUID.
 func (s *Store) Runner(id uuid.UUID) (rd dynamic.RunnerDefinition, err error) {
-	var blob string
-	err = s.db.QueryRow(`SELECT definition FROM runners WHERE uuid = ?`, id.String()).Scan(&blob)
-	if errors.Is(err, sql.ErrNoRows) {
-		return rd, fmt.Errorf("runner %v %w", id, ErrNotFound)
-	} else if err != nil {
-		return rd, fmt.Errorf("failed to read runner %v %w", id, err)
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+	blob, ok := s.runners[id]
+	if !ok {
+		return rd, fmt.Errorf("runner %v %w", id, server.ErrNotFound)
 	}
-	if err = json.Unmarshal([]byte(blob), &rd); err != nil {
-		return rd, fmt.Errorf("failed to decode runner %v %w", id, err)
-	}
-	return
+	return decode(blob)
 }
 
-// DeleteRunner removes a configured runner, and with it everything any ingester had to
-// say about it.  Leaving the statuses behind would strand an error against a runner that
-// no longer exists, and the next report cannot clear it because the ingester will not
-// mention a runner it was never handed.
-func (s *Store) DeleteRunner(id uuid.UUID) (err error) {
-	// both halves or neither.  Done as two statements, a failure between them leaves the
-	// runner gone and its errors behind, and nothing can ever clear those: an ingester
-	// only reports on runners it was handed, so it will never mention this one again.
-	var tx *sql.Tx
-	if tx, err = s.db.Begin(); err != nil {
-		return fmt.Errorf("failed to start a transaction %w", err)
+// DeleteRunner removes a configured runner, and with it everything any ingester had to say
+// about it.  Leaving the statuses behind would strand an error against a runner that no
+// longer exists, and the next report cannot clear it because the ingester will not mention
+// a runner it was never handed.
+func (s *Store) DeleteRunner(id uuid.UUID) error {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	if _, ok := s.runners[id]; !ok {
+		return fmt.Errorf("runner %v %w", id, server.ErrNotFound)
 	}
-	defer tx.Rollback() // a no-op once committed, and the undo if anything below fails
-
-	var res sql.Result
-	if res, err = tx.Exec(`DELETE FROM runners WHERE uuid = ?`, id.String()); err != nil {
-		return fmt.Errorf("failed to delete runner %v %w", id, err)
+	delete(s.runners, id)
+	// both halves or neither, which a single lock makes trivial here
+	for _, byRunner := range s.statuses {
+		delete(byRunner, id)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("runner %v %w", id, ErrNotFound)
-	}
-	if _, err = tx.Exec(`DELETE FROM runner_status WHERE runner = ?`, id.String()); err != nil {
-		return fmt.Errorf("failed to delete the statuses of %v %w", id, err)
-	}
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit the deletion of %v %w", id, err)
-	}
-	return
+	return nil
 }
-
-// StatusRow is one ingester's last word about one configured runner.
-//
-// Error is empty when that ingester accepted the configuration, which is how a runner
-// that has come good is told apart from one nobody has reported on.  Since and Updated
-// are both the server's clock, see ReplaceStatuses.
-type StatusRow struct {
-	Runner   uuid.UUID
-	Ingester uuid.UUID
-	Kind     string
-	Name     string
-	Error    string
-	Since    time.Time
-	Updated  time.Time
-}
-
-// OK reports whether the reporting ingester accepted the configuration.
-func (sr StatusRow) OK() bool { return sr.Error == `` }
 
 // ReplaceStatuses records what one ingester currently makes of its configurations.
 //
@@ -464,143 +434,65 @@ func (sr StatusRow) OK() bool { return sr.Error == `` }
 // what makes a runner that has come good clear itself: it arrives reported clean and
 // overwrites the error that was there, and a runner that is no longer assigned to this
 // ingester simply stops arriving and its row goes.  Nothing has to remember to send a
-// retraction, which is the kind of thing that gets forgotten and leaves a stale red mark
-// on a screen forever.
+// retraction, which is the kind of thing that gets forgotten and leaves a stale red mark on
+// a screen forever.
 //
-// Since is carried forward while the state is unchanged, so a row can answer "how long
-// has this been broken" and not just "is it broken now".  A different error, or an error
-// where there was none, starts the clock again.  Both timestamps are taken here rather
-// than sent by the ingester: an operator comparing two ingesters needs one clock, not two
-// that disagree by however wrong those hosts are.
-func (s *Store) ReplaceStatuses(ingester uuid.UUID, statuses []dynamic.RunnerStatus) (err error) {
+// The since carry-forward is server.MergeStatuses' to decide, not this store's.
+func (s *Store) ReplaceStatuses(ingester uuid.UUID, statuses []dynamic.RunnerStatus) error {
 	if ingester == uuid.Nil() {
 		return errors.New("status report has no ingester UUID")
 	}
-	var tx *sql.Tx
-	if tx, err = s.db.Begin(); err != nil {
-		return fmt.Errorf("failed to start a transaction %w", err)
-	}
-	defer tx.Rollback() // a no-op once committed, and the undo if anything below fails
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
 
-	// what we already hold for this ingester, so an unchanged state keeps its since
-	prior := map[string]struct {
-		msg   string
-		since int64
-	}{}
-	var rows *sql.Rows
-	if rows, err = tx.Query(`SELECT runner, error, since FROM runner_status WHERE ingester = ?`,
-		ingester.String()); err != nil {
-		return fmt.Errorf("failed to read the previous statuses %w", err)
+	existing := make([]server.StatusRow, 0, len(s.statuses[ingester]))
+	for _, row := range s.statuses[ingester] {
+		existing = append(existing, row)
 	}
-	for rows.Next() {
-		var runner, msg string
-		var since int64
-		if err = rows.Scan(&runner, &msg, &since); err != nil {
-			rows.Close()
-			return fmt.Errorf("failed to read the previous statuses %w", err)
-		}
-		prior[runner] = struct {
-			msg   string
-			since int64
-		}{msg: msg, since: since}
+	next := map[uuid.UUID]server.StatusRow{}
+	for _, row := range server.MergeStatuses(existing, statuses, ingester, time.Now()) {
+		next[row.Runner] = row
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("failed to read the previous statuses %w", err)
-	}
-	rows.Close()
-
-	if _, err = tx.Exec(`DELETE FROM runner_status WHERE ingester = ?`, ingester.String()); err != nil {
-		return fmt.Errorf("failed to clear the previous statuses %w", err)
-	}
-
-	now := time.Now().UnixNano()
-	for _, rs := range statuses {
-		if rs.UUID == uuid.Nil() {
-			continue // nothing to key it on, and the ingester already logged it
-		}
-		runner := rs.UUID.String()
-		since := now
-		if was, ok := prior[runner]; ok && was.msg == rs.Error {
-			since = was.since // same state as last time, the clock keeps running
-		}
-		if _, err = tx.Exec(`INSERT INTO runner_status
-			(runner, ingester, kind, name, error, since, updated) VALUES (?,?,?,?,?,?,?)`,
-			runner, ingester.String(), rs.Kind, rs.Name, rs.Error, since, now); err != nil {
-			return fmt.Errorf("failed to store the status of %s %w", runner, err)
-		}
-	}
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit statuses %w", err)
-	}
-	return
+	s.statuses[ingester] = next
+	return nil
 }
 
 // Statuses is every status row, newest report first, for the interface to draw from.
-func (s *Store) Statuses() (r []StatusRow, err error) {
-	return s.scanStatuses(`SELECT runner, ingester, kind, name, error, since, updated
-		FROM runner_status ORDER BY updated DESC, runner ASC`)
-}
-
-// RunnerStatuses is what every ingester has said about one runner.  An error first
-// ordering puts the thing an operator opened the page to read at the top.
-func (s *Store) RunnerStatuses(id uuid.UUID) (r []StatusRow, err error) {
-	return s.scanStatuses(`SELECT runner, ingester, kind, name, error, since, updated
-		FROM runner_status WHERE runner = ?
-		ORDER BY (error = '') ASC, updated DESC`, id.String())
-}
-
-// DeleteStatuses drops every status held for a runner, for when the runner itself goes.
-func (s *Store) DeleteStatuses(id uuid.UUID) (err error) {
-	if _, err = s.db.Exec(`DELETE FROM runner_status WHERE runner = ?`, id.String()); err != nil {
-		return fmt.Errorf("failed to delete the statuses of %v %w", id, err)
+func (s *Store) Statuses() (r []server.StatusRow, err error) {
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+	for _, byRunner := range s.statuses {
+		for _, row := range byRunner {
+			r = append(r, row)
+		}
 	}
+	sort.Slice(r, func(i, j int) bool {
+		if !r[i].Updated.Equal(r[j].Updated) {
+			return r[i].Updated.After(r[j].Updated)
+		}
+		return r[i].Runner.String() < r[j].Runner.String()
+	})
 	return
 }
 
-// scanStatuses runs a status query and decodes it.
-func (s *Store) scanStatuses(query string, args ...any) (r []StatusRow, err error) {
-	var rows *sql.Rows
-	if rows, err = s.db.Query(query, args...); err != nil {
-		return nil, fmt.Errorf("failed to list statuses %w", err)
+// RunnerStatuses is what every ingester has said about one runner.  An error first ordering
+// puts the thing an operator opened the page to read at the top.
+func (s *Store) RunnerStatuses(id uuid.UUID) (r []server.StatusRow, err error) {
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+	for _, byRunner := range s.statuses {
+		if row, ok := byRunner[id]; ok {
+			r = append(r, row)
+		}
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var runner, ingester string
-		var row StatusRow
-		var since, updated int64
-		if err = rows.Scan(&runner, &ingester, &row.Kind, &row.Name, &row.Error, &since, &updated); err != nil {
-			return nil, err
+	sort.Slice(r, func(i, j int) bool {
+		if r[i].OK() != r[j].OK() {
+			return !r[i].OK() // failures first
 		}
-		// a row we cannot make sense of is not worth failing a page over
-		if row.Runner, err = uuid.Parse(runner); err != nil {
-			err = nil
-			continue
+		if !r[i].Updated.Equal(r[j].Updated) {
+			return r[i].Updated.After(r[j].Updated)
 		}
-		if row.Ingester, err = uuid.Parse(ingester); err != nil {
-			err = nil
-			continue
-		}
-		row.Since, row.Updated = time.Unix(0, since), time.Unix(0, updated)
-		r = append(r, row)
-	}
-	err = rows.Err()
-	return
-}
-
-// scanDefinitions decodes a query of definition blobs.
-func scanDefinitions(rows *sql.Rows) (r []dynamic.RunnerDefinition, err error) {
-	for rows.Next() {
-		var blob string
-		if err = rows.Scan(&blob); err != nil {
-			return
-		}
-		var rd dynamic.RunnerDefinition
-		if err = json.Unmarshal([]byte(blob), &rd); err != nil {
-			return nil, fmt.Errorf("failed to decode a stored definition %w", err)
-		}
-		r = append(r, rd)
-	}
-	err = rows.Err()
+		return r[i].Ingester.String() < r[j].Ingester.String()
+	})
 	return
 }

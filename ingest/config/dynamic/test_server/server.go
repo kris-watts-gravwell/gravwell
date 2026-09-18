@@ -16,6 +16,7 @@ import (
 
 	"github.com/gravwell/gravwell/v4/client"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/rpc"
+	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/server"
 	"github.com/gravwell/gravwell/v4/ingest/log"
 )
 
@@ -30,11 +31,11 @@ var authRateWindow = 100 * time.Millisecond
 // protocol, and the parts of it that matter most, pushing a configuration to the
 // ingesters it is meant for, are reachable only from inside.  A caller that only wants to
 // serve can ignore it.
-func NewServer(store *Store, secret string, lgr *log.Logger) (h http.Handler, api *API, err error) {
+func NewServer(store *Store, secret string, lgr *log.Logger) (h http.Handler, api *server.API, err error) {
 	if lgr == nil {
 		lgr = log.NewDiscardLogger()
 	}
-	api = NewAPI(store, lgr)
+	api = server.NewAPI(store, lgr)
 
 	var mux *rpc.Mux
 	if mux, err = api.Mux(); err != nil {

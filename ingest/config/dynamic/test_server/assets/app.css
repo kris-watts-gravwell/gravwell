@@ -58,11 +58,16 @@ input[type=text], input[type=number], input[type=password], textarea, select {
 }
 textarea { min-height: 5rem; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 input[type=checkbox] { width: auto; }
-button.go {
-	background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+/* the two form actions.  They share every rule but the fill so that Delete reads as the
+ * same weight of control as Save rather than as an afterthought: it is a real action with a
+ * real consequence, and a ghost outline next to a solid button says the opposite. */
+button.go, button.danger {
+	color: #fff; border: 0; border-radius: 6px;
 	padding: .45rem .9rem; font: inherit; font-weight: 600; cursor: pointer;
 }
-button.danger { background: none; color: var(--bad); border: 1px solid var(--bad); }
+button.go { background: var(--accent); }
+button.danger { background: var(--bad); }
+button.go:hover, button.danger:hover { filter: brightness(1.08); }
 .actions { display: flex; gap: .6rem; align-items: center; }
 .note { padding: .5rem .8rem; border-radius: 6px; margin: 0 .8rem .8rem; }
 .note.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
@@ -85,6 +90,17 @@ table.ing th {
 table.ing td { padding: .3rem .5rem; border-bottom: 1px solid var(--line); }
 table.ing tr:last-child td { border-bottom: 0; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* a row or panel for something an ingester reported that this server does not hold.  The
+ * tag is what stops an operator reading it as a runner they made and going looking for a
+ * delete button; the dashed edge says "this one is not like the others" without competing
+ * with the status dot, which is still the thing to read first. */
+.tag {
+	font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+	color: var(--muted); border: 1px dashed var(--line); border-radius: 4px;
+	padding: .05rem .3rem; margin-left: .4rem; white-space: nowrap;
+}
+.row.unmanaged { border-style: dashed; }
+span.bad { color: var(--bad); }
 .muted { color: var(--muted); }
 .dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: var(--muted); }
 .dot.on { background: var(--ok); }

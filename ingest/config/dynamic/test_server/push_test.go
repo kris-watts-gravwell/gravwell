@@ -78,7 +78,7 @@ func TestPushGivesEachIngesterItsOwnDeadline(t *testing.T) {
 	rd.Name, rd.UUID = `prod`, uuid.New()
 
 	start := time.Now()
-	delivered, errs := h.api().push(rd)
+	delivered, errs := h.api().Push(rd)
 	elapsed := time.Since(start)
 
 	if len(errs) != 0 {

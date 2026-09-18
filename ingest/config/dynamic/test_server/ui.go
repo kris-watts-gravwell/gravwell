@@ -10,6 +10,7 @@ package main
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -22,6 +23,8 @@ import (
 	"uuid"
 
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
+	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/icon"
+	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/server"
 	"github.com/gravwell/gravwell/v4/ingest/log"
 )
 
@@ -35,13 +38,13 @@ const refreshLists = `#kinds,#runners`
 // UI serves the HTML interface.  Every response is a fragment of HTML rendered on the
 // server, the page holds no state of its own.
 type UI struct {
-	api   *API
+	api   *server.API
 	store *Store
 	lgr   *log.Logger
 	tpl   *template.Template
 }
 
-func NewUI(api *API, store *Store, lgr *log.Logger) (u *UI, err error) {
+func NewUI(api *server.API, store *Store, lgr *log.Logger) (u *UI, err error) {
 	if lgr == nil {
 		lgr = log.NewDiscardLogger()
 	}
@@ -70,6 +73,7 @@ func (u *UI) Register(mux *http.ServeMux) {
 	mux.HandleFunc(`GET /ui/listrow`, u.listRow)
 	mux.HandleFunc(`GET /ui/new`, u.newRunner)
 	mux.HandleFunc(`GET /ui/edit`, u.editRunner)
+	mux.HandleFunc(`GET /ui/unmanaged`, u.unmanagedRunner)
 	mux.HandleFunc(`POST /ui/save`, u.save)
 	mux.HandleFunc(`POST /ui/delete`, u.del)
 }
@@ -84,6 +88,11 @@ type runnerView struct {
 	Detail  string // the one line an operator reads without opening anything
 	Icon    template.HTML
 	HasIcon bool
+
+	// Unmanaged marks a row that exists only because an ingester reported on it.  There
+	// is no stored definition behind it, so it opens the reports rather than the form,
+	// see unmanagedRunners.
+	Unmanaged bool
 }
 
 // kindView is a registered kind as the menu draws it.
@@ -98,13 +107,22 @@ type kindView struct {
 }
 
 // iconFor renders a kind's icon, if it has one that survives sanitizing.  The markup is
-// rebuilt from an allow list rather than trusted, see sanitizeIcon: an icon is drawn by
+// rebuilt from an allow list rather than trusted, see icon.Sanitize: an icon is drawn by
 // whoever wrote the ingester and arrives here over the wire.
+//
+// This is the only place the sanitizer's output becomes template.HTML.  icon.Sanitize hands
+// back a plain string on purpose, so that a caller doing something other than templating
+// does not inherit a type that means "already trusted"; earning that type is the one thing
+// this function is for.
 func iconFor(md *dynamic.RunnerMetadata) (template.HTML, bool) {
 	if md == nil {
 		return ``, false
 	}
-	return sanitizeIcon(md.Icon)
+	svg, ok := icon.Sanitize(md.Icon)
+	if !ok {
+		return ``, false
+	}
+	return template.HTML(svg), true
 }
 
 // versionOf renders a plugin's version, or nothing when it does not declare one.  A zero
@@ -145,7 +163,7 @@ type statusView struct {
 // The rule is dynamic.RunnerQuery.Matches, the same one the ingester's own poll uses, so
 // what the interface says a runner is tasked to is what the ingester would actually be
 // handed.
-func taskedTo(rd dynamic.RunnerDefinition, known []Ingester) (r []Ingester) {
+func taskedTo(rd dynamic.RunnerDefinition, known []server.Ingester) (r []server.Ingester) {
 	for _, ing := range known {
 		q := dynamic.RunnerQuery{ID: ing.UUID, Class: ing.Class, Kinds: ing.Kinds}
 		if q.Matches(rd) {
@@ -170,7 +188,7 @@ const (
 // One ingester failing is the whole runner failing.  A configuration that four ingesters
 // accept and a fifth rejects is a broken configuration, and averaging that away is how a
 // green screen ends up lying to somebody.
-func rollUp(rows []StatusRow, tasked int, connected int) (state, detail string) {
+func rollUp(rows []server.StatusRow, tasked int, connected int) (state, detail string) {
 	var bad int
 	var first string
 	for _, r := range rows {
@@ -336,7 +354,7 @@ func (u *UI) runners(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
-	byRunner := map[uuid.UUID][]StatusRow{}
+	byRunner := map[uuid.UUID][]server.StatusRow{}
 	for _, st := range statuses {
 		byRunner[st.Runner] = append(byRunner[st.Runner], st)
 	}
@@ -375,8 +393,130 @@ func (u *UI) runners(w http.ResponseWriter, r *http.Request) {
 		}
 		rv.Icon, rv.HasIcon = icons[rd.Kind], icons[rd.Kind] != ``
 		out = append(out, rv)
+		delete(byRunner, rd.UUID) // accounted for, so it is not reported again below
 	}
+	// whatever is left was reported by an ingester about something this server holds no
+	// definition for.  It is listed rather than dropped, see unmanagedRunners.
+	out = append(out, unmanagedRunners(byRunner, icons)...)
 	u.render(w, `runners`, out)
+}
+
+// unmanagedRunners is the rows an ingester reported that no stored definition accounts for.
+//
+// They used to be collected and then silently discarded, because the list was built by
+// walking the runners table and looking each one's reports up.  A report about anything
+// else fell through the gap, and the case that falls through it is the one an operator most
+// needs: a configuration file sitting in an ingester's storage directory that this server
+// did not put there, or did not put there in this shape.  A hand edited file is the obvious
+// way to get one, and it is exactly the file that will not load.
+//
+// The ingester is right to send these and the server is right to keep them.  "An ingester
+// is failing to load something, and I have no idea what it is" is a fact, and a screen that
+// draws only what it already knows about cannot tell anybody.
+//
+// Kind and Name come off the report itself.  They are the ingester's reading of a file
+// name, so they are labels rather than identity, which is the other reason these rows open
+// the reports instead of the form: there is nothing here that could be edited and saved.
+func unmanagedRunners(byRunner map[uuid.UUID][]server.StatusRow,
+	icons map[string]template.HTML) (out []runnerView) {
+	for id, rows := range byRunner {
+		if len(rows) == 0 {
+			continue
+		}
+		// nothing is tasked to it as far as this server is concerned, it is not something
+		// this server assigned, so the roll up is told only what was reported
+		state, detail := rollUp(rows, 0, len(rows))
+		rv := runnerView{
+			UUID:      id.String(),
+			Kind:      firstNonEmpty(rows, func(r server.StatusRow) string { return r.Kind }),
+			Name:      firstNonEmpty(rows, func(r server.StatusRow) string { return r.Name }),
+			State:     state,
+			Detail:    detail,
+			Unmanaged: true,
+		}
+		if rv.Name == `` {
+			rv.Name = id.String() // something has to be clickable
+		}
+		rv.Icon, rv.HasIcon = icons[rv.Kind], icons[rv.Kind] != ``
+		out = append(out, rv)
+	}
+	// the map has no order, and this list is polled every few seconds
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].UUID < out[j].UUID
+	})
+	return
+}
+
+// firstNonEmpty is the first label any ingester managed to put on a report.  Two ingesters
+// reporting different names for one UUID is not worth arbitrating over: either is a better
+// thing to show an operator than a bare UUID.
+func firstNonEmpty(rows []server.StatusRow, pick func(server.StatusRow) string) string {
+	for _, r := range rows {
+		if v := pick(r); v != `` {
+			return v
+		}
+	}
+	return ``
+}
+
+// unmanagedView is the detail panel for a runner this server has heard about but does not
+// hold, see unmanagedRunners.
+type unmanagedView struct {
+	UUID  string
+	Kind  string
+	Name  string
+	Known bool // whether the kind is one some ingester has registered
+}
+
+// unmanagedRunner draws the reports for a UUID that has no stored definition.
+//
+// It is a separate handler from editRunner rather than a mode of it because there is
+// nothing to edit: no definition means no fields, and a form whose Save would create a
+// second runner under the same UUID is a trap rather than a convenience.  What an operator
+// needs here is which ingester is complaining and what it said, which is what this shows.
+func (u *UI) unmanagedRunner(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.URL.Query().Get(`uuid`))
+	if err != nil {
+		u.fail(w, fmt.Errorf("invalid runner id %w", err))
+		return
+	}
+	// if a definition has appeared since the list was drawn, this is an ordinary runner
+	// and the form is the right thing to show
+	if _, err = u.store.Runner(id); err == nil {
+		u.editRunner(w, r)
+		return
+	} else if !errors.Is(err, server.ErrNotFound) {
+		u.fail(w, err)
+		return
+	}
+	rows, err := u.store.RunnerStatuses(id)
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	if len(rows) == 0 {
+		// it cleared itself between the list being drawn and this being opened, which is
+		// the outcome the panel tells the operator to wait for
+		u.render(w, `gone`, nil)
+		return
+	}
+	uv := unmanagedView{
+		UUID: id.String(),
+		Kind: firstNonEmpty(rows, func(r server.StatusRow) string { return r.Kind }),
+		Name: firstNonEmpty(rows, func(r server.StatusRow) string { return r.Name }),
+	}
+	if uv.Kind != `` {
+		if _, kerr := u.store.Kind(uv.Kind); kerr == nil {
+			uv.Known = true
+		}
+	}
+	u.render(w, `unmanaged`, uv)
 }
 
 // connectedSet is the ingesters with a session right now, for telling a live report from
@@ -390,7 +530,7 @@ func (u *UI) connectedSet() map[uuid.UUID]bool {
 }
 
 // countLive is how many of a set are currently connected.
-func countLive(set []Ingester, live map[uuid.UUID]bool) (n int) {
+func countLive(set []server.Ingester, live map[uuid.UUID]bool) (n int) {
 	for _, ing := range set {
 		if live[ing.UUID] {
 			n++
@@ -531,7 +671,7 @@ func (u *UI) listRow(w http.ResponseWriter, r *http.Request) {
 // assignmentView builds the two pickers for a kind, marking whatever cur is already
 // pinned to.
 func (u *UI) assignmentView(kind string, cur *dynamic.RunnerDefinition) (targets []targetView, classes []classView, other string, err error) {
-	var known []Ingester
+	var known []server.Ingester
 	if known, err = u.store.KindIngesters(kind); err != nil {
 		return
 	}
@@ -710,7 +850,7 @@ func (u *UI) save(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	delivered, pushErrs := u.api.push(rd)
+	delivered, pushErrs := u.api.Push(rd)
 	n := &note{Class: `ok`}
 	switch {
 	case len(pushErrs) > 0:

@@ -83,14 +83,26 @@ type RegisterKindsRequest struct {
 
 // RunnerQuery asks for the configurations an ingester should be running.
 //
-// The three filters are how a webserver decides what belongs to whom: Kinds is what this
-// build can actually run, and ID and Class are what an Assignment can point at.  A server
+// The filters are how a webserver decides what belongs to whom: Kinds is what this build
+// can actually run, and ID, Class and Groups are what an Assignment can point at.  A server
 // returns a runner when its kind is supported here and its assignment names this ingester,
-// names this class, or names nobody at all.
+// names this class, names a group this ingester is in, or names nobody at all.
 type RunnerQuery struct {
 	ID    uuid.UUID
 	Class string   `json:",omitempty"`
 	Kinds []string `json:",omitempty"`
+
+	// Groups is the groups this ingester belongs to.
+	//
+	// The server fills this in from its own membership data.  It is never read off the
+	// wire, and an ingester does not get to say what groups it is in: a request body
+	// claiming membership of a group would be handing out every configuration pinned to
+	// that group to whoever asked for it.  ID and Class come from the authenticated
+	// session for the same reason.
+	//
+	// It is a field on the query rather than an argument to Matches so that one rule
+	// covers the poll and the push, which is the only way those two can agree.
+	Groups []string `json:",omitempty"`
 }
 
 // Matches reports whether a runner should be handed to the ingester that sent this query.
@@ -113,9 +125,23 @@ func (q RunnerQuery) Matches(rd RunnerDefinition) bool {
 	if !rd.Assigned.AllowsClass(q.Class) {
 		return false
 	}
-	// a group is something this protocol has no way to evaluate yet, so a runner pinned
-	// to one is deliberately handed to nobody rather than to everybody
-	return rd.Assigned.Group == ``
+	return q.inGroup(rd.Assigned.Group)
+}
+
+// inGroup reports whether an assignment's group, if it sets one, names a group this
+// ingester is in.  An assignment that names no group is not filtered by group at all; one
+// that does reaches only the members, so a runner pinned to a group an ingester is not in
+// is handed to nobody rather than to everybody.
+func (q RunnerQuery) inGroup(group string) bool {
+	if group == `` {
+		return true
+	}
+	for _, g := range q.Groups {
+		if g == group {
+			return true
+		}
+	}
+	return false
 }
 
 func (q RunnerQuery) supports(kind string) bool {

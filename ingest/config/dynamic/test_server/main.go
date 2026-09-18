@@ -8,13 +8,14 @@
 
 // Command test_server is a stand in webserver for developing and testing the dynamic
 // ingester configuration system.  It speaks the server half of the dynamic config RPC
-// protocol, stores what ingesters report in SQLite, and serves a small web interface for
+// protocol, keeps what ingesters report in memory, and serves a small web interface for
 // creating and editing runner configurations.
 //
 // It is a development tool, not a product.  It has no user authentication on the web
-// interface, so bind it to a loopback address or a trusted network.
+// interface, so bind it to a loopback address or a trusted network.  Nothing it holds
+// outlives the process: stopping it is how you reset it.
 //
-//	test_server -bind 127.0.0.1:8080 -secret <shared token> -storage ./dynamic.db
+//	test_server -bind 127.0.0.1:8080 -secret <shared token>
 //
 // Ingesters connect to ws://<bind>/api/ingesters/control and authenticate with the same
 // shared token, which is never transmitted, see the rpc package for how that works.
@@ -40,9 +41,8 @@ const (
 )
 
 var (
-	bind    = flag.String(`bind`, `127.0.0.1:8080`, "address:port to serve the HTTP interface on")
-	secret  = flag.String(`secret`, ``, "shared authentication token, required")
-	storage = flag.String(`storage`, ``, "path to the SQLite database holding runner definitions, required")
+	bind   = flag.String(`bind`, `127.0.0.1:8080`, "address:port to serve the HTTP interface on")
+	secret = flag.String(`secret`, ``, "shared authentication token, required")
 )
 
 func main() {
@@ -56,8 +56,6 @@ func main() {
 func run() (err error) {
 	if *secret == `` {
 		return errors.New("-secret is required, it is the shared token ingesters authenticate with")
-	} else if *storage == `` {
-		return errors.New("-storage is required, it is the SQLite database to keep definitions in")
 	}
 
 	lgr, err := log.NewStderrLogger(``)
@@ -66,10 +64,7 @@ func run() (err error) {
 	}
 	defer lgr.Close()
 
-	store, err := OpenStore(*storage)
-	if err != nil {
-		return err
-	}
+	store := NewStore()
 	defer store.Close()
 
 	srv, _, err := NewServer(store, *secret, lgr)
@@ -83,14 +78,13 @@ func run() (err error) {
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
-	// serve in the background so that a signal can shut it down cleanly, an interrupted
-	// test server should not leave a half written database behind
+	// serve in the background so that a signal can shut it down cleanly and connected
+	// ingesters are told rather than left waiting on a socket that has gone
 	errCh := make(chan error, 1)
 	go func() {
-		lgr.Info("serving", log.KV("bind", *bind), log.KV("rpc", client.INGESTERS_CONTROL_URL),
-			log.KV("storage", *storage))
-		fmt.Printf("dynamic config test server\n  web interface  http://%s/\n  ingester RPC   ws://%s%s\n  storage        %s\n",
-			*bind, *bind, client.INGESTERS_CONTROL_URL, *storage)
+		lgr.Info("serving", log.KV("bind", *bind), log.KV("rpc", client.INGESTERS_CONTROL_URL))
+		fmt.Printf("dynamic config test server\n  web interface  http://%s/\n  ingester RPC   ws://%s%s\n  storage        in memory, nothing is persisted\n",
+			*bind, *bind, client.INGESTERS_CONTROL_URL)
 		if lerr := hsrv.ListenAndServe(); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
 			errCh <- lerr
 		}

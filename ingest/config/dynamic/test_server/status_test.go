@@ -20,6 +20,7 @@ import (
 	"github.com/gravwell/gravwell/v4/hosted"
 	"github.com/gravwell/gravwell/v4/hosted/plugins/tester"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
+	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/server"
 )
 
 // testerKind is the real plugin these tests drive.  Using the actual Tester config rather
@@ -45,14 +46,14 @@ func testerRunner(t *testing.T, id uuid.UUID, name, interval string) dynamic.Run
 }
 
 // statusOf finds what one ingester last said about one runner.
-func statusOf(t *testing.T, h *harness, runner uuid.UUID) (StatusRow, bool) {
+func statusOf(t *testing.T, h *harness, runner uuid.UUID) (server.StatusRow, bool) {
 	t.Helper()
 	rows, err := h.store.RunnerStatuses(runner)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) == 0 {
-		return StatusRow{}, false
+		return server.StatusRow{}, false
 	}
 	return rows[0], true
 }

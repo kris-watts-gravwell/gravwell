@@ -17,7 +17,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -30,6 +29,7 @@ import (
 	"github.com/gravwell/gravwell/v4/hosted/plugins/sqs"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/rpc"
+	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/server"
 )
 
 const testSecret = `a-shared-token-for-the-test-server`
@@ -60,20 +60,16 @@ type requiredPluginConfig struct {
 type harness struct {
 	ts     *httptest.Server
 	store  *Store
-	theAPI *API
+	theAPI *server.API
 }
 
 // api is the server side of the protocol, for the tests that drive it directly rather
 // than through a route.
-func (h *harness) api() *API { return h.theAPI }
+func (h *harness) api() *server.API { return h.theAPI }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	store, err := OpenStore(filepath.Join(t.TempDir(), `test.db`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := NewStore()
 	h, api, err := NewServer(store, testSecret, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +167,7 @@ func TestRegistrationOverRPC(t *testing.T) {
 	sess := h.dial(t, nil)
 	ctx := context.Background()
 
-	if err := sess.Call(ctx, MethodRegisterKinds, dynamic.RegisterKindsRequest{
+	if err := sess.Call(ctx, dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 		ID: sess.ID(), Class: `test`, Kinds: []dynamic.RunnerDefinition{proto(t)},
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -198,7 +194,7 @@ func TestRegistrationOverRPC(t *testing.T) {
 
 	// registering again is an update, not a duplicate, an ingester restart says the same
 	// thing twice
-	if err = sess.Call(ctx, MethodRegisterKinds, dynamic.RegisterKindsRequest{
+	if err = sess.Call(ctx, dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 		ID: sess.ID(), Kinds: []dynamic.RunnerDefinition{proto(t)},
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -230,7 +226,7 @@ func TestRegistrationOverRPC(t *testing.T) {
 
 	// and the ingester can read back what it should be running
 	var set dynamic.RunnerSet
-	if err = sess.Call(ctx, MethodListRunners, dynamic.RunnerQuery{
+	if err = sess.Call(ctx, dynamic.MethodListRunners, dynamic.RunnerQuery{
 		ID: sess.ID(), Class: `test`, Kinds: []string{`testplugin`},
 	}, &set); err != nil {
 		t.Fatal(err)
@@ -241,7 +237,7 @@ func TestRegistrationOverRPC(t *testing.T) {
 
 	// a query that cannot run the kind gets nothing
 	var none dynamic.RunnerSet
-	if err = sess.Call(ctx, MethodListRunners, dynamic.RunnerQuery{
+	if err = sess.Call(ctx, dynamic.MethodListRunners, dynamic.RunnerQuery{
 		ID: sess.ID(), Kinds: []string{`somethingelse`},
 	}, &none); err != nil {
 		t.Fatal(err)
@@ -256,7 +252,7 @@ func TestRegistrationOverRPC(t *testing.T) {
 func TestUIFlow(t *testing.T) {
 	h := newHarness(t)
 	sess := h.dial(t, nil)
-	if err := sess.Call(context.Background(), MethodRegisterKinds, dynamic.RegisterKindsRequest{
+	if err := sess.Call(context.Background(), dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 		ID: sess.ID(), Kinds: []dynamic.RunnerDefinition{proto(t)},
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -417,7 +413,7 @@ func TestUIPushesToIngester(t *testing.T) {
 	var mtx sync.Mutex
 	var applied []dynamic.RunnerDefinition
 	mux := rpc.NewMux()
-	if err := mux.Register(MethodApplyConfig, func(_ context.Context, params json.RawMessage) (any, error) {
+	if err := mux.Register(dynamic.MethodApplyConfig, func(_ context.Context, params json.RawMessage) (any, error) {
 		var rd dynamic.RunnerDefinition
 		if err := json.Unmarshal(params, &rd); err != nil {
 			return nil, err
@@ -431,7 +427,7 @@ func TestUIPushesToIngester(t *testing.T) {
 	}
 
 	sess := h.dial(t, mux)
-	if err := sess.Call(context.Background(), MethodRegisterKinds, dynamic.RegisterKindsRequest{
+	if err := sess.Call(context.Background(), dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 		ID: sess.ID(), Kinds: []dynamic.RunnerDefinition{proto(t)},
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -474,7 +470,7 @@ func TestUIPushesToIngester(t *testing.T) {
 func TestUIRejectsBadInput(t *testing.T) {
 	h := newHarness(t)
 	sess := h.dial(t, nil)
-	if err := sess.Call(context.Background(), MethodRegisterKinds, dynamic.RegisterKindsRequest{
+	if err := sess.Call(context.Background(), dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 		ID: sess.ID(), Kinds: []dynamic.RunnerDefinition{proto(t)},
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -586,7 +582,7 @@ func TestAssignmentUI(t *testing.T) {
 	other := h.dialAs(t, `dmz`)
 	reg := func(sess *rpc.Session, kinds ...dynamic.RunnerDefinition) {
 		t.Helper()
-		if err := sess.Call(context.Background(), MethodRegisterKinds, dynamic.RegisterKindsRequest{
+		if err := sess.Call(context.Background(), dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 			ID: sess.ID(), Kinds: kinds,
 		}, nil); err != nil {
 			t.Fatal(err)
@@ -688,7 +684,7 @@ func TestAssignmentUI(t *testing.T) {
 func TestIngestersDropdown(t *testing.T) {
 	h := newHarness(t)
 	sess := h.dialAs(t, `edge`)
-	if err := sess.Call(context.Background(), MethodRegisterKinds, dynamic.RegisterKindsRequest{
+	if err := sess.Call(context.Background(), dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 		ID: sess.ID(), Kinds: []dynamic.RunnerDefinition{proto(t)},
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -733,7 +729,7 @@ func TestPollingRespectsAssignment(t *testing.T) {
 	edge := h.dialAs(t, `edge`)
 	core := h.dialAs(t, `core`)
 	for _, sess := range []*rpc.Session{edge, core} {
-		if err := sess.Call(context.Background(), MethodRegisterKinds, dynamic.RegisterKindsRequest{
+		if err := sess.Call(context.Background(), dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 			ID: sess.ID(), Kinds: []dynamic.RunnerDefinition{proto(t)},
 		}, nil); err != nil {
 			t.Fatal(err)
@@ -764,7 +760,7 @@ func TestPollingRespectsAssignment(t *testing.T) {
 		t.Helper()
 		var set dynamic.RunnerSet
 		// the body deliberately lies about identity, the server must use the session
-		if err := sess.Call(context.Background(), MethodListRunners, dynamic.RunnerQuery{
+		if err := sess.Call(context.Background(), dynamic.MethodListRunners, dynamic.RunnerQuery{
 			ID: uuid.New(), Class: `impersonated`, Kinds: []string{`testplugin`},
 		}, &set); err != nil {
 			t.Fatal(err)
@@ -860,7 +856,7 @@ func TestPushRespectsAssignment(t *testing.T) {
 		}
 		t.Cleanup(func() { s.Close() })
 		sp.sess = s
-		if err = s.Call(context.Background(), MethodRegisterKinds, dynamic.RegisterKindsRequest{
+		if err = s.Call(context.Background(), dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 			ID: s.ID(), Kinds: kinds,
 		}, nil); err != nil {
 			t.Fatal(err)
@@ -922,7 +918,7 @@ func TestPushRespectsAssignment(t *testing.T) {
 func TestSecretsInTheUI(t *testing.T) {
 	h := newHarness(t)
 	sess := h.dialAs(t, `edge`)
-	if err := sess.Call(context.Background(), MethodRegisterKinds, dynamic.RegisterKindsRequest{
+	if err := sess.Call(context.Background(), dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 		ID: sess.ID(), Kinds: []dynamic.RunnerDefinition{proto(t)},
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -1046,7 +1042,7 @@ func valueOf(rd dynamic.RunnerDefinition, name string) any {
 func TestListControl(t *testing.T) {
 	h := newHarness(t)
 	sess := h.dialAs(t, `edge`)
-	if err := sess.Call(context.Background(), MethodRegisterKinds, dynamic.RegisterKindsRequest{
+	if err := sess.Call(context.Background(), dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 		ID: sess.ID(), Kinds: []dynamic.RunnerDefinition{proto(t)},
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -1174,7 +1170,7 @@ func TestRequiredInTheUI(t *testing.T) {
 		t.Fatal(err)
 	}
 	rp.Name, rp.UUID = ``, uuid.Nil()
-	if err := sess.Call(context.Background(), MethodRegisterKinds, dynamic.RegisterKindsRequest{
+	if err := sess.Call(context.Background(), dynamic.MethodRegisterKinds, dynamic.RegisterKindsRequest{
 		ID: sess.ID(), Kinds: []dynamic.RunnerDefinition{rp},
 	}, nil); err != nil {
 		t.Fatal(err)

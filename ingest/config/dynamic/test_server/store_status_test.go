@@ -9,27 +9,19 @@
 package main
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"uuid"
 
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
+	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/server"
 )
 
-func newStore(t *testing.T) *Store {
-	t.Helper()
-	s, err := OpenStore(filepath.Join(t.TempDir(), `status.db`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { s.Close() })
-	return s
-}
+func newStore(_ *testing.T) *Store { return NewStore() }
 
 // only returns the single status held for a runner, failing if there is not exactly one.
-func only(t *testing.T, s *Store, runner uuid.UUID) StatusRow {
+func only(t *testing.T, s *Store, runner uuid.UUID) server.StatusRow {
 	t.Helper()
 	rows, err := s.RunnerStatuses(runner)
 	if err != nil {
@@ -184,8 +176,8 @@ func TestDeleteRunnerClearsStatuses(t *testing.T) {
 // report from a machine that is no longer connected is the last thing it said rather than
 // news.
 func TestRollUp(t *testing.T) {
-	ok := StatusRow{}
-	bad := StatusRow{Error: `missing unit in duration "3"`}
+	ok := server.StatusRow{}
+	bad := server.StatusRow{Error: `missing unit in duration "3"`}
 
 	// nothing registered can run it: not a silence to wait out, an assignment that points
 	// at nothing
@@ -202,24 +194,24 @@ func TestRollUp(t *testing.T) {
 		t.Errorf("the detail does not say nothing is connected: %q", detail)
 	}
 
-	if state, _ = rollUp([]StatusRow{ok, ok}, 2, 2); state != stateOK {
+	if state, _ = rollUp([]server.StatusRow{ok, ok}, 2, 2); state != stateOK {
 		t.Errorf("two clean reports rolled up to %q", state)
 	}
 	// a report that is not backed by a live connection is still shown, but marked
-	if _, detail = rollUp([]StatusRow{ok}, 1, 0); !strings.Contains(detail, `none connected`) {
+	if _, detail = rollUp([]server.StatusRow{ok}, 1, 0); !strings.Contains(detail, `none connected`) {
 		t.Errorf("a stale acceptance reads as live: %q", detail)
 	}
 	// partially reported
-	if state, detail = rollUp([]StatusRow{ok}, 3, 3); state != stateOK || !strings.Contains(detail, `1 of 3`) {
+	if state, detail = rollUp([]server.StatusRow{ok}, 3, 3); state != stateOK || !strings.Contains(detail, `1 of 3`) {
 		t.Errorf("a partly reported runner rolled up to %q %q", state, detail)
 	}
 
-	state, detail = rollUp([]StatusRow{bad}, 1, 1)
+	state, detail = rollUp([]server.StatusRow{bad}, 1, 1)
 	if state != stateBad || !strings.Contains(detail, bad.Error) {
 		t.Errorf("a single failure rolled up to %q %q, want the plugin's own words", state, detail)
 	}
 	// the mixed case is the one that matters, a green light here would be a lie
-	if state, detail = rollUp([]StatusRow{ok, bad, ok}, 3, 3); state != stateBad {
+	if state, detail = rollUp([]server.StatusRow{ok, bad, ok}, 3, 3); state != stateBad {
 		t.Errorf("one failure among three rolled up to %q, want %q", state, stateBad)
 	} else if !strings.Contains(detail, `1 of 3 reports`) || !strings.Contains(detail, bad.Error) {
 		t.Errorf("the mixed summary does not say who or why: %q", detail)

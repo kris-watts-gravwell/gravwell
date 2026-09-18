@@ -6,11 +6,12 @@
  * BSD 2-clause license. See the LICENSE file for details.
  **************************************************************************/
 
-package main
+package server
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -23,16 +24,6 @@ import (
 	"github.com/gravwell/gravwell/v4/ingest/log"
 )
 
-// The method names and payload types live in the dynamic package now, so that the
-// ingester and this server cannot drift apart.  They are aliased here only to keep the
-// handler signatures readable.
-const (
-	MethodRegisterKinds = dynamic.MethodRegisterKinds
-	MethodListRunners   = dynamic.MethodListRunners
-	MethodApplyConfig   = dynamic.MethodApplyConfig
-	MethodReportStatus  = dynamic.MethodReportStatus
-)
-
 // pushTimeout bounds a call down to an ingester.  A wedged ingester must not hold an HTTP
 // handler open.
 const pushTimeout = 10 * time.Second
@@ -40,36 +31,84 @@ const pushTimeout = 10 * time.Second
 // API is the server side of the dynamic config protocol.  It owns the store and the set
 // of connected ingesters.
 type API struct {
-	store *Store
-	lgr   *log.Logger
+	store ProtocolStore
+	// full is the same store when it implements everything, which is how ForgetIngester
+	// reaches storage without NewAPI demanding sixteen methods from a caller that only
+	// wants to serve ingesters.  Resolved once here rather than asserted on every call.
+	full Store
+	// groups answers what groups an ingester is in, see WithGroupMembership.  Nil means
+	// nobody is in any group.
+	groups func(uuid.UUID) ([]string, error)
+	lgr    *log.Logger
 
 	mtx       sync.RWMutex
 	ingesters map[uuid.UUID]*rpc.Session
 	classes   map[uuid.UUID]string
 }
 
-func NewAPI(store *Store, lgr *log.Logger) *API {
+// NewAPI builds the server half.  It takes only ProtocolStore: serving ingesters needs
+// four methods, and a caller that is not also serving a management interface should not
+// have to implement the rest to get there.
+// Option adjusts an API at construction.  Anything that varies by deployment goes through
+// one of these rather than growing NewAPI another parameter that most callers pass nil to.
+type Option func(*API)
+
+// WithGroupMembership teaches the API what groups an ingester belongs to, which is what
+// lets a configuration be pinned to a group.  fn is asked about the authenticated
+// ingester's UUID and nothing else.
+//
+// Without it no ingester is in any group, so a runner pinned to one reaches nobody rather
+// than everybody.  That is the safe direction, and it is what the test server does: it has
+// no membership data to answer from.
+//
+// Membership is never taken off the wire.  An ingester that could name its own groups in a
+// poll body would be claiming every configuration pinned to any group it cared to name,
+// which is why listRunners discards what the body said and asks this instead.
+func WithGroupMembership(fn func(uuid.UUID) ([]string, error)) Option {
+	return func(a *API) { a.groups = fn }
+}
+
+func NewAPI(store ProtocolStore, lgr *log.Logger, opts ...Option) *API {
 	if lgr == nil {
 		lgr = log.NewDiscardLogger()
 	}
-	return &API{
+	full, _ := store.(Store)
+	a := &API{
 		store:     store,
+		full:      full,
 		lgr:       lgr,
 		ingesters: map[uuid.UUID]*rpc.Session{},
 		classes:   map[uuid.UUID]string{},
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(a)
+		}
+	}
+	return a
+}
+
+// groupsOf is the groups the server says an ingester belongs to.
+func (a *API) groupsOf(id uuid.UUID) (groups []string, err error) {
+	if a.groups == nil || id == uuid.Nil() {
+		return nil, nil
+	}
+	if groups, err = a.groups(id); err != nil {
+		return nil, fmt.Errorf("failed to read the groups of %v %w", id, err)
+	}
+	return
 }
 
 // Mux builds the method set we expose to ingesters.
 func (a *API) Mux() (m *rpc.Mux, err error) {
 	m = rpc.NewMux()
-	if err = m.Register(MethodRegisterKinds, a.registerKinds); err != nil {
+	if err = m.Register(dynamic.MethodRegisterKinds, a.registerKinds); err != nil {
 		return
 	}
-	if err = m.Register(MethodListRunners, a.listRunners); err != nil {
+	if err = m.Register(dynamic.MethodListRunners, a.listRunners); err != nil {
 		return
 	}
-	err = m.Register(MethodReportStatus, a.reportStatus)
+	err = m.Register(dynamic.MethodReportStatus, a.reportStatus)
 	return
 }
 
@@ -93,6 +132,48 @@ func (a *API) OnSession(s *rpc.Session) {
 	}
 	a.mtx.Unlock()
 	a.lgr.Info("ingester disconnected", log.KV("id", id), log.KVErr(s.Err()))
+}
+
+// ErrIngesterConnected is returned when an operation requires an ingester that is not
+// currently talking to this server.
+var ErrIngesterConnected = errors.New("ingester is connected")
+
+// connected reports whether one ingester has a session here right now.
+func (a *API) connected(id uuid.UUID) bool {
+	a.mtx.RLock()
+	defer a.mtx.RUnlock()
+	_, ok := a.ingesters[id]
+	return ok
+}
+
+// ForgetIngester drops everything held about an ingester this server is not currently
+// talking to: its registrations, the statuses it reported, and the ingester record.
+//
+// A connected one is refused, and the reason is worth spelling out because it is invisible
+// from the outside.  The two delivery paths take an ingester's kinds from different places:
+// listRunners takes them from the request body, so a forgotten ingester keeps being handed
+// configurations on every poll, while targeted takes them from the store, so every push
+// silently stops reaching it.  Forgetting a live ingester therefore leaves it half
+// connected — still receiving work, no longer receiving pushes, absent from the catalog
+// until it happens to reconnect — and nothing anywhere reports that.
+//
+// The guard lives here rather than in each caller so that a webserver and the test server
+// cannot disagree about it.  A store knows nothing about sessions and cannot enforce this.
+//
+// For the case the feature exists for, a decommissioned box, the refusal costs nothing:
+// such a box is not connected.
+func (a *API) ForgetIngester(id uuid.UUID) error {
+	if a.full == nil {
+		return errors.New("this store serves the protocol only, it cannot forget an ingester")
+	}
+	if a.connected(id) {
+		return fmt.Errorf("%w %v, stop or disconnect it first", ErrIngesterConnected, id)
+	}
+	if err := a.full.ForgetIngester(id); err != nil {
+		return err
+	}
+	a.lgr.Info("forgot ingester", log.KV("ingester", id))
+	return nil
 }
 
 // Connected lists the ingesters we can currently push to.
@@ -151,6 +232,13 @@ func (a *API) listRunners(ctx context.Context, params json.RawMessage) (any, err
 		q.ID = sess.ID()
 		q.Class = sess.Class()
 	}
+	// groups are the same story and are overwritten rather than defaulted, so a body that
+	// named some does not keep them, see WithGroupMembership
+	groups, err := a.groupsOf(q.ID)
+	if err != nil {
+		return nil, err
+	}
+	q.Groups = groups
 	all, err := a.store.Runners()
 	if err != nil {
 		return nil, err
@@ -199,7 +287,7 @@ func (a *API) reportStatus(ctx context.Context, params json.RawMessage) (any, er
 	return map[string]any{`ok`: true}, nil
 }
 
-// push sends a configuration down to the connected ingesters it is actually meant for,
+// Push sends a configuration down to the connected ingesters it is actually meant for,
 // and reports which ones took it.
 //
 // The assignment is applied here, not just at poll time.  A push is how a change reaches
@@ -210,7 +298,7 @@ func (a *API) reportStatus(ctx context.Context, params json.RawMessage) (any, er
 //
 // With no ingester connected, or none that the configuration is meant for, it is simply
 // stored and picked up on the next poll.  That is a normal state, not a failure.
-func (a *API) push(rd dynamic.RunnerDefinition) (delivered int, errs []string) {
+func (a *API) Push(rd dynamic.RunnerDefinition) (delivered int, errs []string) {
 	sessions := a.Connected()
 	if len(sessions) == 0 {
 		return
@@ -271,7 +359,12 @@ func (a *API) targeted(s *rpc.Session, rd dynamic.RunnerDefinition) bool {
 		a.lgr.Error("failed to read an ingester's kinds", log.KV("id", s.ID()), log.KVErr(err))
 		return false // we cannot show it is meant for them, so do not send it
 	}
-	q := dynamic.RunnerQuery{ID: s.ID(), Class: s.Class()}
+	groups, err := a.groupsOf(s.ID())
+	if err != nil {
+		a.lgr.Error("failed to read an ingester's groups", log.KV("id", s.ID()), log.KVErr(err))
+		return false // we cannot show it is meant for them, so do not send it
+	}
+	q := dynamic.RunnerQuery{ID: s.ID(), Class: s.Class(), Groups: groups}
 	for _, k := range kinds {
 		q.Kinds = append(q.Kinds, k.Kind)
 	}

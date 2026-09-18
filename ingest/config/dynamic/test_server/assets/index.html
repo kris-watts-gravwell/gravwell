@@ -64,17 +64,63 @@
 <p class="empty">Nothing configured yet.</p>
 {{- else -}}
 {{- range . }}
-<button class="row" hx-get="/ui/edit?uuid={{.UUID}}" hx-target="#detail">
+{{- /* an unmanaged row is something an ingester reported that this server holds no
+       definition for, so it opens the reports rather than the edit form: there are no
+       fields to draw and nothing a Save could mean. */ -}}
+<button class="row{{if .Unmanaged}} unmanaged{{end}}"
+	hx-get="{{if .Unmanaged}}/ui/unmanaged{{else}}/ui/edit{{end}}?uuid={{.UUID}}" hx-target="#detail">
 	<span class="nm">
 		<span class="dot {{.State}}" title="{{.Detail}}"></span>
 		{{- if .HasIcon }}{{.Icon}}{{ end -}}
 		{{.Name}}
+		{{- if .Unmanaged }} <span class="tag">not configured here</span>{{ end -}}
 	</span>
-	<span class="sub">{{.Kind}} &middot; {{.UUID}}</span>
+	<span class="sub">{{if .Kind}}{{.Kind}} &middot; {{end}}{{.UUID}}</span>
 	<span class="sub {{.State}}">{{.Detail}}</span>
 </button>
 {{- end }}
 {{- end }}
+{{end}}
+
+{{- /* The detail panel for a runner an ingester reported that this server does not hold.
+       It explains what it is looking at, because the answer is not "a runner you made" and
+       an operator who assumes it is will go looking for a delete button that cannot help
+       them: the file is on the ingester, not here. */ -}}
+{{define "unmanaged"}}
+<div class="kindhead">
+	<span class="kindname">{{.Name}}</span>
+	<span class="tag">not configured here</span>
+</div>
+<div>
+	<div class="assign">
+		<span class="lbl">What this is</span>
+		<span class="hint">An ingester has reported on a configuration this server holds no
+			record of. Nothing here created it, so there is nothing here to edit or delete.
+			The usual cause is a configuration file placed or edited by hand in the
+			ingester's storage directory — which is also the kind of file that will not
+			load.</span>
+		<span class="hint">Fix or remove the file on the ingester. The report clears itself
+			as soon as that ingester next reports without it.</span>
+	</div>
+	<div class="assign">
+		<span class="lbl">Identity</span>
+		<span class="hint mono">{{.UUID}}</span>
+		<span class="hint">Kind: {{if .Kind}}<span class="mono">{{.Kind}}</span>
+			{{- if not .Known}} <span class="bad">— no ingester has registered this kind</span>{{end}}
+			{{- else}}<span class="muted">not reported</span>{{end}}</span>
+	</div>
+	<div class="assign">
+		<span class="lbl">Reports</span>
+		<span class="hint">What each ingester that mentioned this last said about it.</span>
+		<div id="runnerstatus" hx-get="/ui/runnerstatus?uuid={{.UUID}}" hx-trigger="load, every 5s"></div>
+	</div>
+</div>
+{{end}}
+
+{{- /* A report that cleared itself while the operator was opening it.  This is the good
+       outcome, so it is said plainly rather than as an error. */ -}}
+{{define "gone"}}
+<p class="empty">Nothing is reporting on this any more. Whatever was wrong has been fixed or removed.</p>
 {{end}}
 
 {{define "runnerstatus"}}

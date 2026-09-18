@@ -14,6 +14,7 @@ import (
 	"io"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"uuid"
 
@@ -484,8 +485,16 @@ func (v Variable) emitIniLine(w io.Writer, prefix string) (err error) {
 		return
 	}
 	switch v.Type {
-	case typeBool, typeInt, typeUint:
+	case typeBool:
 		fmt.Fprintf(w, "%s%s=%v\n", prefix, v.Name, v.Value)
+	case typeInt, typeUint:
+		// Every value in this system has been through JSON by the time it gets here: a
+		// server stores definitions as JSON and the wire is JSON, so a whole number
+		// arrives as a float64 no matter what set it.  %v on a float64 switches to
+		// exponent form at a million, and Batch-Size=1e+06 is not something the config
+		// loader on the far side will accept -- it fails at the ingester, which is the
+		// one place that cannot explain why.
+		fmt.Fprintf(w, "%s%s=%s\n", prefix, v.Name, iniWholeNumber(v.Value))
 	case typeFloat:
 		// %v uses the shortest representation that parses back exactly, %f would
 		// silently truncate the value to six decimal places
@@ -526,6 +535,28 @@ func (v Variable) emitIniLine(w io.Writer, prefix string) (err error) {
 		// TODO
 	}
 	return
+}
+
+// iniWholeNumber renders an int or uint member without an exponent.
+//
+// A float64 is the shape a whole number takes after any JSON round trip, and fmt's %v
+// would render a million as 1e+06.  A non-integral float cannot be a valid int or uint
+// and Validate refuses it, so the fallback here is only for shapes that never reach a
+// config file anyway.
+func iniWholeNumber(v any) string {
+	var f float64
+	switch n := v.(type) {
+	case float64:
+		f = n
+	case float32:
+		f = float64(n)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+	if math.IsInf(f, 0) || math.IsNaN(f) || f != math.Trunc(f) {
+		return fmt.Sprintf("%v", v)
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 // quote renders one of this variable's strings for an INI line, naming the variable on failure.

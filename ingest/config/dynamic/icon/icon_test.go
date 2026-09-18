@@ -6,10 +6,9 @@
  * BSD 2-clause license. See the LICENSE file for details.
  **************************************************************************/
 
-package main
+package icon
 
 import (
-	"html/template"
 	"regexp"
 	"strings"
 	"testing"
@@ -20,11 +19,11 @@ import (
 // TestSanitizeIconKeepsRealArtwork checks that the thing this exists to draw still draws.
 // A sanitizer that drops everything is safe and useless.
 func TestSanitizeIconKeepsRealArtwork(t *testing.T) {
-	out, ok := sanitizeIcon(tester.Icon)
+	out, ok := Sanitize(tester.Icon)
 	if !ok {
 		t.Fatal(`the tester plugin's own icon did not survive sanitizing`)
 	}
-	got := string(out)
+	got := out
 	for _, must := range []string{
 		`<svg `,
 		`viewBox="0 0 24 24"`,
@@ -73,11 +72,11 @@ func TestSanitizeIconStripsHostileMarkup(t *testing.T) {
 	}
 	for _, tc := range hostile {
 		t.Run(tc.name, func(t *testing.T) {
-			out, ok := sanitizeIcon(strings.Replace(wrap, `%s`, tc.payload, 1))
+			out, ok := Sanitize(strings.Replace(wrap, `%s`, tc.payload, 1))
 			if !ok {
 				return // dropped entirely, which is a perfectly good outcome
 			}
-			got := strings.ToLower(string(out))
+			got := strings.ToLower(out)
 			for _, banned := range tc.banned {
 				if strings.Contains(got, strings.ToLower(banned)) {
 					t.Errorf("%q survived sanitizing:\n%s", banned, out)
@@ -107,7 +106,7 @@ func TestSanitizeIconRejectsJunk(t *testing.T) {
 		{`oversized`, `<svg viewBox="0 0 1 1"><path d="` + strings.Repeat(`M1 1 `, 20000) + `"/></svg>`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if out, ok := sanitizeIcon(tc.in); ok {
+			if out, ok := Sanitize(tc.in); ok {
 				t.Errorf("accepted junk, produced %q", out)
 			}
 		})
@@ -121,25 +120,25 @@ func TestSanitizeIconRejectsJunk(t *testing.T) {
 // at is that answer: assuming a square instead crops everything drawn at another size to
 // its top left corner, which looks like a rendering fault rather than a missing attribute.
 func TestSanitizeIconSuppliesAViewBox(t *testing.T) {
-	out, ok := sanitizeIcon(`<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><path d="M1 1 L2 2"/></svg>`)
+	out, ok := Sanitize(`<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><path d="M1 1 L2 2"/></svg>`)
 	if !ok {
 		t.Fatal(`a viewBox-less icon was dropped`)
 	}
-	if !strings.Contains(string(out), `viewBox="0 0 48 48"`) {
+	if !strings.Contains(out, `viewBox="0 0 48 48"`) {
 		t.Errorf("the viewBox was not taken from the authored size:\n%s", out)
 	}
 
 	// a unit suffix is still a size
-	if out, ok = sanitizeIcon(`<svg xmlns="http://www.w3.org/2000/svg" width="40px" height="30px"><path d="M1 1 L2 2"/></svg>`); !ok {
+	if out, ok = Sanitize(`<svg xmlns="http://www.w3.org/2000/svg" width="40px" height="30px"><path d="M1 1 L2 2"/></svg>`); !ok {
 		t.Fatal(`dropped`)
-	} else if !strings.Contains(string(out), `viewBox="0 0 40 30"`) {
+	} else if !strings.Contains(out, `viewBox="0 0 40 30"`) {
 		t.Errorf("a unit suffix was not understood:\n%s", out)
 	}
 
 	// and with nothing at all to go on, the square fallback stands
-	if out, ok = sanitizeIcon(`<svg xmlns="http://www.w3.org/2000/svg"><path d="M1 1 L2 2"/></svg>`); !ok {
+	if out, ok = Sanitize(`<svg xmlns="http://www.w3.org/2000/svg"><path d="M1 1 L2 2"/></svg>`); !ok {
 		t.Fatal(`dropped`)
-	} else if !strings.Contains(string(out), `viewBox="`+iconViewBox+`"`) {
+	} else if !strings.Contains(out, `viewBox="`+iconViewBox+`"`) {
 		t.Errorf("no fallback viewBox:\n%s", out)
 	}
 }
@@ -153,11 +152,11 @@ func TestSanitizeIconKeepsGradients(t *testing.T) {
 		`<stop stop-color="#B0084D" offset="0%"/><stop stop-color="#FF4F8B" offset="100%"/>` +
 		`</linearGradient></defs>` +
 		`<g fill="none" fill-rule="evenodd"><path d="M0 0h40v40H0z" fill="url(#a)"/></g></svg>`
-	out, ok := sanitizeIcon(raw)
+	out, ok := Sanitize(raw)
 	if !ok {
 		t.Fatal(`a gradient filled icon was dropped entirely`)
 	}
-	got := string(out)
+	got := out
 	// the camel case spelling has to survive: "lineargradient" is not a gradient
 	if !strings.Contains(got, `<linearGradient `) {
 		t.Errorf("the element name was not kept in its canonical spelling:\n%s", got)
@@ -190,16 +189,16 @@ func TestSanitizeIconNamespacesIdsPerIcon(t *testing.T) {
 			`<defs><linearGradient id="a"><stop stop-color="` + color + `" offset="0%"/></linearGradient></defs>` +
 			`<path d="M0 0h40v40H0z" fill="url(#a)"/></svg>`
 	}
-	first, ok := sanitizeIcon(mk(`#111111`))
+	first, ok := Sanitize(mk(`#111111`))
 	if !ok {
 		t.Fatal(`dropped`)
 	}
-	second, ok := sanitizeIcon(mk(`#222222`))
+	second, ok := Sanitize(mk(`#222222`))
 	if !ok {
 		t.Fatal(`dropped`)
 	}
-	idOf := func(h template.HTML) string {
-		m := regexp.MustCompile(`id="([^"]+)"`).FindStringSubmatch(string(h))
+	idOf := func(h string) string {
+		m := regexp.MustCompile(`id="([^"]+)"`).FindStringSubmatch(h)
 		if m == nil {
 			t.Fatalf("no id in %s", h)
 		}
@@ -210,8 +209,8 @@ func TestSanitizeIconNamespacesIdsPerIcon(t *testing.T) {
 	}
 	// the same icon twice is the same markup, so a fragment rendered more than once on a
 	// page is byte for byte identical
-	again, _ := sanitizeIcon(mk(`#111111`))
-	if string(again) != string(first) {
+	again, _ := Sanitize(mk(`#111111`))
+	if again != first {
 		t.Error(`sanitizing is not deterministic, the same icon produced different markup`)
 	}
 }
@@ -230,11 +229,11 @@ func TestSanitizeIconRefusesForeignPaint(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">` +
 				`<path d="M0 0h40v40H0z" fill="` + tc.paint + `"/></svg>`
-			out, ok := sanitizeIcon(raw)
+			out, ok := Sanitize(raw)
 			if !ok {
 				return // dropped entirely is a fine answer
 			}
-			got := strings.ToLower(string(out))
+			got := strings.ToLower(out)
 			for _, never := range []string{`evil.example`, `javascript:`, `data:`} {
 				if strings.Contains(got, never) {
 					t.Errorf("a foreign paint reference survived (%s):\n%s", never, out)
@@ -259,11 +258,11 @@ func TestSanitizeIconDropsGradientHrefs(t *testing.T) {
 	raw := `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="40">` +
 		`<defs><linearGradient id="a" xlink:href="https://evil.example/g.svg#b"><stop stop-color="#fff" offset="0%"/></linearGradient></defs>` +
 		`<path d="M0 0h40v40H0z" fill="url(#a)"/></svg>`
-	out, ok := sanitizeIcon(raw)
+	out, ok := Sanitize(raw)
 	if !ok {
 		return
 	}
-	got := strings.ToLower(string(out))
+	got := strings.ToLower(out)
 	if strings.Contains(got, `href`) || strings.Contains(got, `evil.example`) {
 		t.Errorf("a gradient kept a reference to another document:\n%s", out)
 	}
@@ -276,11 +275,11 @@ func TestSanitizeIconDropsUnusableIds(t *testing.T) {
 		raw := `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">` +
 			`<defs><linearGradient id="` + bad + `"><stop stop-color="#fff" offset="0%"/></linearGradient></defs>` +
 			`<path d="M0 0h40v40H0z"/></svg>`
-		out, ok := sanitizeIcon(raw)
+		out, ok := Sanitize(raw)
 		if !ok {
 			continue
 		}
-		got := strings.ToLower(string(out))
+		got := strings.ToLower(out)
 		if strings.Contains(got, `onload`) || strings.Contains(got, `alert`) {
 			t.Errorf("id %q smuggled something through:\n%s", bad, out)
 		}
@@ -299,11 +298,11 @@ func TestSanitizeIconKeepsUnderscoreIds(t *testing.T) {
 			raw := `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">` +
 				`<defs><linearGradient id="` + id + `"><stop stop-color="#B0084D" offset="0%"/></linearGradient></defs>` +
 				`<g fill="none"><path d="M0 0h40v40H0z" fill="url(#` + id + `)"/></g></svg>`
-			out, ok := sanitizeIcon(raw)
+			out, ok := Sanitize(raw)
 			if !ok {
 				t.Fatal(`dropped entirely`)
 			}
-			got := string(out)
+			got := out
 			idm := regexp.MustCompile(`id="([^"]+)"`).FindStringSubmatch(got)
 			ref := regexp.MustCompile(`fill="url\(#([^)]+)\)"`).FindStringSubmatch(got)
 			if idm == nil {
@@ -324,8 +323,8 @@ func TestSanitizeIconKeepsUnderscoreIds(t *testing.T) {
 		raw := `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">` +
 			`<defs><linearGradient id="` + bad + `"><stop stop-color="#fff" offset="0%"/></linearGradient></defs>` +
 			`<path d="M0 0h40v40H0z"/></svg>`
-		if out, ok := sanitizeIcon(raw); ok {
-			low := strings.ToLower(string(out))
+		if out, ok := Sanitize(raw); ok {
+			low := strings.ToLower(out)
 			if strings.Contains(low, `onload`) || strings.Contains(low, `id="`+strings.ToLower(bad)) {
 				t.Errorf("id %q was kept verbatim:\n%s", bad, out)
 			}
@@ -351,11 +350,11 @@ func TestSanitizeIconReadsEverySizeUnit(t *testing.T) {
 	} {
 		t.Run(tc.size, func(t *testing.T) {
 			raw := `<svg xmlns="http://www.w3.org/2000/svg" width="` + tc.size + `" height="` + tc.size + `"><path d="M0 0h40v40H0z"/></svg>`
-			out, ok := sanitizeIcon(raw)
+			out, ok := Sanitize(raw)
 			if !ok {
 				t.Fatal(`dropped`)
 			}
-			if !strings.Contains(string(out), `viewBox="`+tc.want+`"`) {
+			if !strings.Contains(out, `viewBox="`+tc.want+`"`) {
 				t.Errorf("size %q produced %s, want viewBox %q", tc.size, out, tc.want)
 			}
 		})

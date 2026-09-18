@@ -6,14 +6,13 @@
  * BSD 2-clause license. See the LICENSE file for details.
  **************************************************************************/
 
-package main
+package icon
 
 import (
 	"crypto/sha256"
 	"encoding/xml"
 	"fmt"
 	"html"
-	"html/template"
 	"io"
 	"regexp"
 	"strconv"
@@ -21,6 +20,8 @@ import (
 	"unicode"
 )
 
+// Package icon rebuilds a plugin supplied SVG into markup that is safe to put in a page.
+//
 // An icon is drawn by whoever wrote the ingester, and it arrives here over the wire.  It
 // is therefore untrusted markup, and SVG is a document format rather than an image one: it
 // can carry <script>, event handler attributes, <foreignObject> holding arbitrary HTML,
@@ -171,17 +172,22 @@ func iconPrefix(raw string) string {
 	return fmt.Sprintf("i%x-", sum[:4])
 }
 
-// sanitizeIcon rebuilds a plugin supplied SVG from the allow lists above.
+// Sanitize rebuilds a plugin supplied SVG from the allow lists above.
 //
-// The second return says whether there is anything to draw.  An icon that is empty,
-// oversized, not an SVG, or not well formed comes back as nothing at all and the caller
-// falls back to drawing the plugin's name, which is the correct outcome for a decorative
-// element: a broken icon is never worth a broken page.
+// ok is false when nothing safe survived.  An icon that is empty, oversized, not an SVG,
+// or not well formed comes back as nothing at all and the caller falls back to drawing the
+// plugin's name, which is the correct outcome for a decorative element: a broken icon is
+// never worth a broken page.
+//
+// The result is a plain string rather than a template.HTML.  This package is called by a
+// JSON API as well as by something rendering a page, and handing back an html/template
+// type would force that import on a caller that is not rendering HTML.  A caller that is
+// converts at its own call site, where the decision to trust this output is visible.
 //
 // The root is re-emitted rather than copied.  Its width and height are dropped so that
 // the stylesheet decides how big an icon is instead of whoever drew it, and it is marked
 // aria-hidden because the name it sits next to is already the accessible label.
-func sanitizeIcon(raw string) (template.HTML, bool) {
+func Sanitize(raw string) (svg string, ok bool) {
 	if strings.TrimSpace(raw) == `` || len(raw) > maxIconBytes {
 		return ``, false
 	}
@@ -255,7 +261,7 @@ func sanitizeIcon(raw string) (template.HTML, bool) {
 	if depth != 0 || shapes == 0 {
 		return ``, false // unbalanced, or nothing left that would draw anything
 	}
-	return template.HTML(sb.String()), true
+	return sb.String(), true
 }
 
 // writeIconAttrs emits the attributes an element is allowed to keep.
