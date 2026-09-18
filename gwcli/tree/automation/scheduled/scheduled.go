@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/gravwell/gravwell/v4/client"
 	"github.com/gravwell/gravwell/v4/client/types"
 	"github.com/gravwell/gravwell/v4/gwcli/action"
 	"github.com/gravwell/gravwell/v4/gwcli/bubbles/multiselectlist"
@@ -68,10 +69,14 @@ func listAction() action.Pair {
 			if id, err := fs.GetString("id"); err != nil {
 				clilog.GetFlag(err)
 			} else if id != "" {
-				ss, err := connection.Client.GetScheduledSearchEx(id, params.QueryOpts)
+				var opts client.GetOptions
+				if params.QueryOpts != nil {
+					opts.IncludeDeleted = params.QueryOpts.IncludeDeleted
+				}
+				ss, err := connection.Client.GetScheduledSearchEx(id, opts)
 				return []types.ScheduledSearch{ss}, err
 			}
-			list, err := connection.Client.ListScheduledSearches(params.QueryOpts)
+			list, err := connection.Client.ListScheduledSearches(params.QueryOptions())
 			return list.Results, err
 		},
 		nil,
@@ -163,7 +168,7 @@ func delete() action.Pair {
 
 		},
 		func(params scaffolddelete.DataParameters) ([]multiselectlist.SelectableItem[string], error) {
-			lr, err := connection.Client.ListScheduledSearches(params.QueryOpts)
+			lr, err := connection.Client.ListScheduledSearches(params.QueryOptions())
 			if err != nil {
 				return nil, err
 			}
@@ -259,7 +264,7 @@ func edit() action.Pair {
 				return connection.Client.GetScheduledSearch(id)
 			},
 			FetchSub: func() (items []types.ScheduledSearch, err error) {
-				list, err := connection.Client.ListScheduledSearches(nil)
+				list, err := connection.Client.ListScheduledSearches(types.QueryOptions{})
 				return list.Results, err
 			},
 			GetFieldSub: func(item types.ScheduledSearch, fieldKey string) (value string, err error) {
@@ -350,7 +355,7 @@ func cancel() action.Pair {
 		"Cancel one or several currently-executing scheduled searches by ID.",
 		"scheduled search",
 		func(_ *pflag.FlagSet) ([]multiselectlist.SelectableItem[string], error) {
-			lr, err := connection.Client.ListScheduledSearches(nil)
+			lr, err := connection.Client.ListScheduledSearches(types.QueryOptions{})
 			if err != nil {
 				return nil, err
 			}
@@ -389,7 +394,7 @@ func backfillToggle() action.Pair {
 			if err != nil {
 				return nil, err
 			}
-			l, err := connection.Client.ListScheduledSearches(nil)
+			l, err := connection.Client.ListScheduledSearches(types.QueryOptions{})
 			if err != nil {
 				return nil, err
 			}
@@ -464,7 +469,7 @@ func clear() action.Pair {
 		"Clear the execution results (including errors and state) for one or several scheduled searches.",
 		"scheduled search",
 		func(_ *pflag.FlagSet) ([]multiselectlist.SelectableItem[string], error) {
-			lr, err := connection.Client.ListScheduledSearches(nil)
+			lr, err := connection.Client.ListScheduledSearches(types.QueryOptions{})
 			if err != nil {
 				return nil, err
 			}

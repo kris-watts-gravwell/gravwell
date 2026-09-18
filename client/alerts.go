@@ -9,51 +9,33 @@
 package client
 
 import (
-	"net/http"
-
 	"github.com/gravwell/gravwell/v4/client/types"
 )
 
 // CreateAlert creates a new alert.
 func (c *Client) CreateAlert(def types.Alert) (result types.Alert, err error) {
-	err = c.methodStaticPushURL(http.MethodPost, alertsUrl(), def, &result, nil, nil)
-	return
+	return c.post[types.Alert, types.Alert](alertsUrl(), &def)
 }
 
 // ListAlerts returns a list of alerts the user has access to.
-func (c *Client) ListAlerts(opts *types.QueryOptions) (result types.AlertListResponse, err error) {
-	if opts == nil {
-		opts = &types.QueryOptions{}
-	}
-	err = c.postStaticURL(ALERTS_LIST_URL, opts, &result)
-	return
+func (c *Client) ListAlerts(opts types.QueryOptions) (result types.AlertListResponse, err error) {
+	return c.post[types.QueryOptions, types.AlertListResponse](ALERTS_LIST_URL, &opts)
 }
 
 // ListAllAlerts (admin-only) returns all alerts on the system.
-func (c *Client) ListAllAlerts(opts *types.QueryOptions) (result types.AlertListResponse, err error) {
-	if opts == nil {
-		opts = &types.QueryOptions{}
-	}
-	opts.AdminMode = true
-	err = c.postStaticURL(ALERTS_LIST_URL, opts, &result)
-	return
+func (c *Client) ListAllAlerts(opts types.QueryOptions) (result types.AlertListResponse, err error) {
+	opts.AdminMode = true // we'll reject this if the user isn't actually an admin
+	return c.post[types.QueryOptions, types.AlertListResponse](ALERTS_LIST_URL, &opts)
 }
 
 // GetAlert returns the definition for a specific alert.
 func (c *Client) GetAlert(id string) (result types.Alert, err error) {
-	err = c.getStaticURL(alertsIdUrl(id), &result)
-	return
+	return c.GetAlertEx(id, GetOptions{})
 }
 
-// GetAlertEx returns the definition for a specific alert, applying
-// parameters from QueryOptions if appropriate. Currently only
-// IncludeDeleted is supported.
-func (c *Client) GetAlertEx(id string, opts *types.QueryOptions) (result types.Alert, err error) {
-	if opts == nil {
-		opts = &types.QueryOptions{}
-	}
-	err = c.getStaticURL(alertsIdUrl(id), &result, ezParam("include_deleted", opts.IncludeDeleted))
-	return
+// GetAlertEx returns the definition for a specific alert, modified by opts.
+func (c *Client) GetAlertEx(id string, opts GetOptions) (result types.Alert, err error) {
+	return c.get[types.Alert](alertsIdUrl(id), opts.params()...)
 }
 
 // UpdateAlert modifies an existing alert and returns the complete, updated struct.
@@ -66,20 +48,17 @@ func (c *Client) UpdateAlert(ID string, p types.AlertPatch) (updated types.Alert
 
 // DeleteAlert marks an alert as deleted.
 func (c *Client) DeleteAlert(id string) (err error) {
-	err = c.deleteStaticURL(alertsIdUrl(id), nil)
-	return
+	return c.delete(alertsIdUrl(id), false)
 }
 
 // PurgeAlert deletes an alert completely from the database
 func (c *Client) PurgeAlert(id string) (err error) {
-	err = c.deleteStaticURL(alertsIdUrl(id), nil, ezParam("purge", "true"))
-	return
+	return c.delete(alertsIdUrl(id), true)
 }
 
 // GetAlertSampleEvent asks the webserver to generate a sample event for the given alert.
 func (c *Client) GetAlertSampleEvent(id string) (result types.Event, err error) {
-	err = c.getStaticURL(alertsIdSampleEventUrl(id), &result)
-	return
+	return c.get[types.Event](alertsIdSampleEventUrl(id))
 }
 
 // ValidateAlertScheduledSearchDispatcher validates an existing scheduled search against
@@ -93,9 +72,7 @@ func (c *Client) ValidateAlertScheduledSearchDispatcher(ssearchID string, schema
 		},
 		Schema: schema,
 	}
-	err = c.methodStaticPushURL(http.MethodPost, alertsValidateDispatcherUrl(), req, &resp, nil, nil)
-	return
-
+	return c.post[types.AlertDispatcherValidateRequest, types.AlertDispatcherValidateResponse](alertsValidateDispatcherUrl(), &req)
 }
 
 // ValidateAlertFlowConsumer validates an existing flow against
@@ -110,12 +87,10 @@ func (c *Client) ValidateAlertFlowConsumer(flowID string, alert types.Alert) (re
 		},
 		Alert: alert,
 	}
-	err = c.methodStaticPushURL(http.MethodPost, alertsValidateConsumerUrl(), req, &resp, nil, nil)
-	return
-
+	return c.post[types.AlertConsumerValidateRequest, types.AlertConsumerValidateResponse](alertsValidateConsumerUrl(), &req)
 }
 
 // CleanupAlerts (admin-only) purges all deleted alerts for all users.
 func (c *Client) CleanupAlerts() error {
-	return c.deleteStaticURL(ALERTS_URL, nil)
+	return c.delete(ALERTS_URL, false)
 }

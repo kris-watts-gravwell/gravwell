@@ -19,6 +19,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/gravwell/gravwell/v4/client"
 	"github.com/gravwell/gravwell/v4/client/types"
 	"github.com/gravwell/gravwell/v4/gwcli/action"
 	"github.com/gravwell/gravwell/v4/gwcli/bubbles/multiselectlist"
@@ -67,7 +68,7 @@ func list() action.Pair {
 	)
 	return scaffoldlist.NewListAction(short, long,
 		types.Token{}, func(fs *pflag.FlagSet, params scaffoldlist.DataParameters) ([]types.Token, error) {
-			resp, err := connection.Client.ListTokens(params.QueryOpts)
+			resp, err := connection.Client.ListTokens(params.QueryOptions())
 			if err != nil {
 				return nil, err
 			}
@@ -138,8 +139,12 @@ func get() action.Pair {
 
 func getTokens(bare []string, params scaffoldlist.DataParameters) ([]types.Token, error) {
 	var tokens = make([]types.Token, len(bare))
+	var opts client.GetOptions
+	if params.QueryOpts != nil {
+		opts.IncludeDeleted = params.QueryOpts.IncludeDeleted
+	}
 	for i, id := range bare {
-		t, err := connection.Client.GetTokenEx(id, params.QueryOpts)
+		t, err := connection.Client.GetTokenEx(id, opts)
 		if err != nil {
 			if phrases.IsNotFoundErr(err) {
 				return nil, phrases.ErrUnknownIdentifier(id, "token ID")
@@ -372,7 +377,7 @@ func delete() action.Pair {
 			return connection.Client.DeleteToken(id)
 		},
 		func(params scaffolddelete.DataParameters) ([]multiselectlist.SelectableItem[string], error) {
-			lr, err := connection.Client.ListTokens(params.QueryOpts)
+			lr, err := connection.Client.ListTokens(params.QueryOptions())
 			if err != nil {
 				return nil, err
 			}
@@ -414,7 +419,7 @@ func regenerate() action.Pair {
 				return connection.Client.GetToken(id)
 			},
 			FetchSub: func() (items []types.Token, err error) {
-				resp, err := connection.Client.ListTokens(nil)
+				resp, err := connection.Client.ListTokens(types.QueryOptions{})
 				if err != nil {
 					return nil, err
 				}
