@@ -15,6 +15,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/gravwell/gravwell/v4/ingest/config"
 )
 
 const (
@@ -28,6 +30,15 @@ const (
 	// rather than borrowed from ingest/config, which keeps its own copy unexported, and a
 	// disagreement between the two would mean writing files that nothing ever reads.
 	confExt = `.conf`
+
+	// envIngestControlAuth is where Auth-Token may be supplied from the environment.
+	//
+	// It is deliberately the same variable the webserver reads for Ingest-Control-Auth.
+	// This is one secret with two ends, and giving each end its own name is an invitation
+	// for them to drift -- which fails as an authentication error on the ingester, the one
+	// place with no way to explain that the two halves disagree.  It also lets a container
+	// hand the same value to both without baking a credential into an image.
+	envIngestControlAuth = `GRAVWELL_INGEST_CONTROL_AUTH`
 )
 
 // Config type manages the static config for dynamic ingesters which specifies
@@ -74,6 +85,15 @@ func (c *Config) Verify() (err error) {
 	if !c.Enabled() {
 		return
 	}
+
+	// A token in the configuration file wins; the environment only fills in one that is
+	// absent, which is the same precedence every other secret here uses.  This is checked
+	// after Enabled on purpose: an environment variable on its own must not switch dynamic
+	// configuration on for an ingester whose config never asked for it.
+	if err = config.LoadEnvVar(&c.Auth_Token, envIngestControlAuth, ``); err != nil {
+		return fmt.Errorf("failed to load %s %w", envIngestControlAuth, err)
+	}
+
 	if len(c.Webserver) == 0 {
 		return errors.New("missing webserver endpoints")
 	} else if len(c.Auth_Token) == 0 {

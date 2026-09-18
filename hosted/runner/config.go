@@ -64,7 +64,16 @@ type cfgType struct {
 	plugins.Configs // embed the type so we can abstract the startup more easily
 }
 
-func (c cfgType) Verify() (err error) {
+// Verify validates the whole configuration.
+//
+// The receiver is a POINTER, and that is load bearing.  IngestConfig.Verify and
+// dynamic.Config.Verify both take pointers and both MUTATE what they verify: they fill in
+// secrets from the environment, normalize webserver URLs and apply defaults.  On a value
+// receiver every one of those writes lands in a copy that is discarded the moment this
+// returns, so the ingest secret and the dynamic Auth-Token silently stay empty and the
+// ingester fails later with "Ingest key is empty" or an authentication error, neither of
+// which points back here.
+func (c *cfgType) Verify() (err error) {
 	if err = c.IngestConfig.Verify(); err != nil {
 		return
 	} else if err = c.Attach.Verify(); err != nil {

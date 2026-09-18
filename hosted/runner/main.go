@@ -104,12 +104,23 @@ func main() {
 		ib.Logger.FatalCode(0, "failed to start dynamic configuration client", log.KVErr(err))
 	}
 
-	// check that we have configured ingesters
-	if c := cfg.IngesterCount(); c <= 0 {
+	// Check that we have configured ingesters.
+	//
+	// Running none is only an error when nothing can ever hand us one.  With dynamic
+	// configuration enabled a webserver deploys runners at runtime, so a fresh install
+	// legitimately starts with zero and picks them up on the first sync -- and exiting
+	// here would mean the one deployment that most needs to wait for its configuration is
+	// the only one that never lives long enough to receive it.  Everything below copes
+	// with an empty set: createRunners builds nothing, startIngesters starts nothing, and
+	// the reload path a dynamic update drives is what brings the first runner up.
+	if c := cfg.IngesterCount(); c > 0 {
+		ib.Logger.Info("starting", log.KV("hosted-count", c))
+	} else if cfg.Dynamic.Enabled() {
+		ib.Logger.Info("starting with no runners configured, waiting for dynamic configuration",
+			log.KV("webservers", len(cfg.Dynamic.Webserver)))
+	} else {
 		ib.Logger.FatalCode(0, "no hosted ingesters configured")
 		return
-	} else {
-		ib.Logger.Info("starting", log.KV("hosted-count", c))
 	}
 
 	// get the state manager up and rolling
