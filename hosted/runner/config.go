@@ -18,6 +18,7 @@ import (
 	"github.com/gravwell/gravwell/v4/ingest/attach"
 	"github.com/gravwell/gravwell/v4/ingest/config"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
+	"github.com/gravwell/gravwell/v4/ingest/entry"
 )
 
 func GetConfig(path, overlayPath string) (*cfgType, error) {
@@ -121,6 +122,9 @@ func (c cfgType) Tags() (tags []string, err error) {
 	}
 	if len(tags) > 0 {
 		sort.Strings(tags)
+	} else {
+		// we can't negotiate NOTHING, so we negotiate the gravwell tag
+		tags = []string{entry.GravwellTagName}
 	}
 	return
 }
