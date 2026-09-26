@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 
@@ -148,9 +149,9 @@ func (pt *proxyTrust) clientAddr(r *http.Request, lgr *log.Logger) string {
 			}
 		}
 		// rightmost entry that is not one of our own proxies
-		for i := len(chain) - 1; i >= 0; i-- {
-			if !pt.trusted(chain[i]) {
-				return chain[i].String()
+		for _, c := range slices.Backward(chain) {
+			if !pt.trusted(c) {
+				return c.String()
 			}
 		}
 		// every hop in the chain is ours, the leftmost is as far back as we can see
@@ -181,7 +182,7 @@ func hasForwardingHeader(r *http.Request) bool {
 
 // parseAddrList splits a comma separated address list, as X-Forwarded-For carries.
 func parseAddrList(v string) (r []netip.Addr) {
-	for _, part := range strings.Split(v, `,`) {
+	for part := range strings.SplitSeq(v, `,`) {
 		if a, ok := parseAddrLoose(part); ok {
 			r = append(r, a)
 		}
@@ -193,8 +194,8 @@ func parseAddrList(v string) (r []netip.Addr) {
 // Elements are comma separated and each carries semicolon separated parameters, so
 // "for=192.0.2.60;proto=http, for=\"[2001:db8::1]:4711\"" yields two addresses.
 func parseForwarded(v string) (r []netip.Addr) {
-	for _, element := range strings.Split(v, `,`) {
-		for _, param := range strings.Split(element, `;`) {
+	for element := range strings.SplitSeq(v, `,`) {
+		for param := range strings.SplitSeq(element, `;`) {
 			k, val, found := strings.Cut(param, `=`)
 			if !found || !strings.EqualFold(strings.TrimSpace(k), `for`) {
 				continue

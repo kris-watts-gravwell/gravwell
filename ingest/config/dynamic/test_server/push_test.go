@@ -66,7 +66,7 @@ func TestPushGivesEachIngesterItsOwnDeadline(t *testing.T) {
 	// sequential on one context.
 	const each = 3 * time.Second
 	const count = 5
-	for i := 0; i < count; i++ {
+	for range count {
 		slowIngester(t, h, each)
 	}
 	waitFor(t, `every ingester to be connected`, func() bool {

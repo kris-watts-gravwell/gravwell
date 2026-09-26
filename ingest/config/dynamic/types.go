@@ -14,6 +14,7 @@ import (
 	"io"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"uuid"
@@ -69,10 +70,22 @@ const (
 	// written: leaving the other field alone is still choosing its default.
 	optRequiredIf = `requiredif`
 
-	// iniRawUnsafe is the set of runes the gcfg raw string scanner treats specially:
-	// a backtick, a backslash and a double quote.  A value holding none of them is
-	// copied through a backtick string verbatim.
-	iniRawUnsafe = "`" + `\"`
+	// iniRawUnsafe is the set of runes that keep a value off the raw backtick path:
+	// the three the gcfg raw string scanner treats specially -- a backtick, which
+	// terminates the string, a backslash, which sets its escape state, and a double
+	// quote, which gets escaped -- plus a newline.
+	//
+	// A raw string may legally span lines, so a newline is unsafe for a different reason
+	// than the other three: it is representable, but it would put the rest of the value
+	// on lines of its own.  Everything that reads a rendered block back a line at a time,
+	// metadata comments in particular, would then be reading a value as though it were
+	// structure, and a value could forge whatever it liked simply by containing it.
+	// Escaped by iniQuote instead, every line of a block is a line of the block.
+	//
+	// A carriage return is deliberately not in the set.  It does not start a line, so it
+	// cannot forge one, and gcfg has no escape for it: putting it here would only turn a
+	// value that carries one from representable into refused.
+	iniRawUnsafe = "`" + `\"` + "\n"
 )
 
 var (
@@ -197,12 +210,7 @@ func (c *Condition) Matches(v any) bool {
 	if v != nil {
 		cur = fmt.Sprintf("%v", v)
 	}
-	for _, want := range c.Values {
-		if want == cur {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.Values, cur)
 }
 
 // Variable is a single value in a dynamic configuration, it may be some primative
@@ -213,6 +221,8 @@ type Variable struct {
 	Type        ValueType
 	Description string `json:",omitempty"`
 	Required    bool
+	// various key/value metadata associated with this value, examples may be a secret that references a stored Secret by key
+	Metadata map[string]string `json:",omitempty,omitzero"`
 
 	// Enum, when set, is every value this variable may take.  A consumer should offer
 	// exactly these and refuse anything else, and for a list it applies to each entry.
@@ -252,10 +262,8 @@ func (v Variable) inEnum(s string) error {
 	if len(v.Enum) == 0 {
 		return nil
 	}
-	for _, cur := range v.Enum {
-		if cur == s {
-			return nil
-		}
+	if slices.Contains(v.Enum, s) {
+		return nil
 	}
 	return fmt.Errorf("%q is not a valid %s, it must be one of %s", s, v.Name, strings.Join(v.Enum, `, `))
 }
@@ -284,12 +292,7 @@ func (a *Assignment) AllowsUUID(id uuid.UUID) bool {
 	if a == nil || len(a.UUIDs) == 0 {
 		return true
 	}
-	for _, cur := range a.UUIDs {
-		if cur == id {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(a.UUIDs, id)
 }
 
 // AllowsClass reports whether an ingester's class passes the class filter.  An assignment
@@ -298,12 +301,7 @@ func (a *Assignment) AllowsClass(class string) bool {
 	if a == nil || len(a.Classes) == 0 {
 		return true
 	}
-	for _, cur := range a.Classes {
-		if cur == class {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(a.Classes, class)
 }
 
 // Validate checks a variable to make sure it is appropriately populated and that if there is a Value its type
@@ -863,7 +861,7 @@ func mapField(f reflect.StructField, fv reflect.Value, depth int) (v Variable, e
 // struct tags are `dynamic:"secret"`, a space after the colon stops the conventional tag
 // parser from finding the key at all.
 func hasDynamicOption(f reflect.StructField, opt string) bool {
-	for _, cur := range strings.Split(f.Tag.Get(dynamicTag), `,`) {
+	for cur := range strings.SplitSeq(f.Tag.Get(dynamicTag), `,`) {
 		if strings.TrimSpace(cur) == opt {
 			return true
 		}
@@ -876,7 +874,7 @@ func hasDynamicOption(f reflect.StructField, opt string) bool {
 // The tag stays comma separated, so a value that is itself a list uses a pipe: a comma
 // inside one would end the option rather than extend it.
 func dynamicOption(f reflect.StructField, name string) (string, bool) {
-	for _, cur := range strings.Split(f.Tag.Get(dynamicTag), `,`) {
+	for cur := range strings.SplitSeq(f.Tag.Get(dynamicTag), `,`) {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(cur), name+`=`); ok {
 			return strings.TrimSpace(v), true
 		}
@@ -888,7 +886,7 @@ func dynamicOption(f reflect.StructField, name string) (string, bool) {
 // the caller: they are meaningless in an enum and meaningful in a condition, where one
 // stands for "not set".
 func splitTagList(raw string, keepEmpty bool) (r []string) {
-	for _, cur := range strings.Split(raw, `|`) {
+	for cur := range strings.SplitSeq(raw, `|`) {
 		cur = strings.TrimSpace(cur)
 		if cur == `` && !keepEmpty {
 			continue
@@ -1024,6 +1022,11 @@ func (c RunnerDefinition) INI() (r string, err error) {
 	// key written after it
 	var todo []Variable
 	for _, v := range c.Variables {
+		// the metadata comment goes above the member it describes, and it goes there
+		// whether or not that member has a value to write below it
+		if err = v.emitIniMetadata(&sb, "\t"); err != nil {
+			return
+		}
 		if v.Type.Complex() {
 			// only one that was actually filled in has anything to write.  A nested
 			// member the operator left alone is described but unset, exactly like every

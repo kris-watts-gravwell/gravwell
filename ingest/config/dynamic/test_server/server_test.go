@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -887,9 +888,7 @@ func TestPushRespectsAssignment(t *testing.T) {
 		form.Set(`uuid`, formValue(t, body, `uuid`))
 		form.Set(`name`, name)
 		form.Set(`var.Tag-Name`, name)
-		for k, v := range assign {
-			form[k] = v
-		}
+		maps.Copy(form, assign)
 		if code, b, _ := h.post(t, `/ui/save`, form); code != http.StatusOK {
 			t.Fatalf("save %s = %d: %s", name, code, b)
 		}

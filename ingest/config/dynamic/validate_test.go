@@ -177,9 +177,9 @@ func TestValidateKindNameIsNotAGoIdentifier(t *testing.T) {
 func TestBuildStatuses(t *testing.T) {
 	a, b, c := uuid.New(), uuid.New(), uuid.New()
 	kept := []configuredRunner{
-		{RunnerDefinition: RunnerDefinition{Kind: `k`, Name: `remote-ok`, UUID: a}, remote: true},
-		{RunnerDefinition: RunnerDefinition{Kind: `k`, Name: `remote-bad`, UUID: b}, remote: true},
-		{RunnerDefinition: RunnerDefinition{Kind: `k`, Name: `local`, UUID: c}},
+		{Kind: `k`, Name: `remote-ok`, UUID: a, remote: true},
+		{Kind: `k`, Name: `remote-bad`, UUID: b, remote: true},
+		{Kind: `k`, Name: `local`, UUID: c},
 	}
 	rejected := map[uuid.UUID]RunnerStatus{
 		b: {UUID: b, Kind: `k`, Name: `remote-bad`, Error: `boom`},

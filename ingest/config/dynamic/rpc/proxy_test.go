@@ -156,7 +156,7 @@ func TestClientAddrSpoofThroughTrustedProxy(t *testing.T) {
 	// a flood of forged entries must not let each attempt key a different entry, which is
 	// what would defeat the throttle
 	seen := map[string]bool{}
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		xff := fmt.Sprintf("10.9.%d.%d, 203.0.113.9", i/256, i%256)
 		seen[pt.clientAddr(req(`10.1.2.3:443`, map[string]string{hdrXForwardedFor: xff}), lgr)] = true
 	}

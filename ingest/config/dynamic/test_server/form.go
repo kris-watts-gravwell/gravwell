@@ -391,7 +391,7 @@ func convert(raw string, vt dynamic.ValueType) (v any, err error) {
 		// the form posts one entry per input now, this is the fallback for a value that
 		// still arrives as a single blob
 		var set []string
-		for _, line := range strings.Split(raw, "\n") {
+		for line := range strings.SplitSeq(raw, "\n") {
 			if line = strings.TrimSpace(line); line != `` {
 				set = append(set, line)
 			}

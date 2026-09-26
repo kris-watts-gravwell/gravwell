@@ -73,7 +73,7 @@ func TestThrottleRefusalDoesNotExtend(t *testing.T) {
 func TestThrottlePrunes(t *testing.T) {
 	th := newThrottle(time.Second, 4096)
 	t0 := time.Now()
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		th.allow(fmt.Sprintf("10.0.%d.%d", i/256, i%256), t0)
 	}
 	if n := th.tracked(); n != 1000 {
@@ -101,7 +101,7 @@ func TestThrottleBounded(t *testing.T) {
 	// roll through far more addresses than the table can hold, all at one instant so
 	// nothing ages out underneath us
 	var allowed, degraded int
-	for i := 0; i < max*20; i++ {
+	for i := range max * 20 {
 		ok, deg := th.allow(fmt.Sprintf("2001:db8::%x", i), t0)
 		if ok {
 			allowed++
@@ -130,7 +130,7 @@ func TestThrottleBounded(t *testing.T) {
 
 	// still inside the window, so the table is still full and every new address is
 	// refused by the one global limiter
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		ok, deg := th.allow(fmt.Sprintf("2001:db8:1::%x", i), t0.Add(500*time.Millisecond))
 		if ok {
 			t.Fatalf("a new address was allowed while the table was full and the global limiter spent")
@@ -162,7 +162,7 @@ func TestThrottleKnownClientSurvivesFlood(t *testing.T) {
 		t.Fatal(`the client's first attempt was refused`)
 	}
 	// now fill the rest of the table and keep rolling
-	for i := 0; i < max*10; i++ {
+	for i := range max * 10 {
 		th.allow(fmt.Sprintf("2001:db8::%x", i), t0.Add(time.Millisecond))
 	}
 	if n := th.tracked(); n > max {
@@ -181,11 +181,11 @@ func TestThrottleConcurrent(t *testing.T) {
 	th := newThrottle(time.Second, 128)
 	t0 := time.Now()
 	var wg sync.WaitGroup
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
+			for j := range 100 {
 				th.allow(fmt.Sprintf("10.0.0.%d", j%50), t0.Add(time.Duration(j)*time.Millisecond))
 			}
 		}(i)
@@ -287,7 +287,7 @@ func TestServerThrottleDisabled(t *testing.T) {
 	}
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		sess, err := Dial(context.Background(), ClientConfig{
 			Webserver: ts.URL, Token: testToken, ID: uuid.New(), PingInterval: -1,
 		})

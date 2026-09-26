@@ -223,7 +223,7 @@ func TestWrongTokenRejected(t *testing.T) {
 // entirely on the server never reusing a nonce.
 func TestNoncesAreFresh(t *testing.T) {
 	seen := map[string]bool{}
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		n, err := newNonce()
 		if err != nil {
 			t.Fatal(err)
@@ -288,10 +288,9 @@ func TestRPCErrors(t *testing.T) {
 	ctx := context.Background()
 
 	// a method that ran and failed is a RemoteError, distinct from the transport dying
-	var re RemoteError
 	if err = sess.Call(ctx, `boom`, nil, nil); err == nil {
 		t.Error(`a failing method should return an error`)
-	} else if !errors.As(err, &re) {
+	} else if re, ok := errors.AsType[RemoteError](err); !ok {
 		t.Errorf("got %T %v, want a RemoteError", err, err)
 	} else if !strings.Contains(re.Message, `always fails`) {
 		t.Errorf("RemoteError did not carry the reason: %v", re)
@@ -380,7 +379,7 @@ func TestConcurrentCalls(t *testing.T) {
 	const n = 64
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -525,7 +524,7 @@ func TestPingAlwaysAnswered(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sess.Close()
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err = sess.Ping(context.Background()); err != nil {
 			t.Fatalf("ping %d: %v", i, err)
 		}

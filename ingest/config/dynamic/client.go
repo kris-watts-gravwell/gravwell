@@ -262,8 +262,7 @@ func (dcm *DynamicConfigManager) reportStatus(sess *rpc.Session) (err error) {
 	ctx, cf := context.WithTimeout(dcm.ctx, callTimeout)
 	defer cf()
 	if err = sess.Call(ctx, MethodReportStatus, req, nil); err != nil {
-		var re rpc.RemoteError
-		if errors.As(err, &re) {
+		if _, ok := errors.AsType[rpc.RemoteError](err); ok {
 			dcm.lgr.Warn("dynamic config status report refused", log.KVErr(err))
 			return nil
 		}
@@ -442,7 +441,17 @@ func (dcm *DynamicConfigManager) runnerPath(rd RunnerDefinition) string {
 // and there is no way to tell which from the file name alone.
 //
 // It is a comment, so gcfg reads straight past it.
-const remoteMarker = `; gravwell dynamic configuration, managed by the webserver`
+//
+// gcfg opens a comment on either a hash or a semicolon, and every config this product
+// ships uses a hash.  The semicolon form is what this used to write, so it is still
+// recognized on the way in: the marker is what says a file is the server's to delete, and
+// a file that stopped answering that question would be swept by nothing and loaded
+// forever.  One is rewritten into the other the next time the server sends its config.
+const (
+	remoteMarkerText   = `gravwell dynamic configuration, managed by the webserver`
+	remoteMarker       = `# ` + remoteMarkerText
+	legacyRemoteMarker = `; ` + remoteMarkerText // written by ingesters before the hash
+)
 
 // markRemote prefixes an INI block with the marker.
 func markRemote(ini string) string {
@@ -462,12 +471,14 @@ func isRemoteConfig(pth string) bool {
 		return false
 	}
 	defer f.Close()
+	// the two markers differ only in their opening character, so one read covers both
 	buf := make([]byte, len(remoteMarker))
 	n, err := io.ReadFull(f, buf)
 	if err != nil && n < len(remoteMarker) {
 		return false
 	}
-	return string(buf[:n]) == remoteMarker
+	line := string(buf[:n])
+	return line == remoteMarker || line == legacyRemoteMarker
 }
 
 // sweepOrphans deletes the webserver's configurations that this reconcile did not keep.

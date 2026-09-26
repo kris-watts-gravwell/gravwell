@@ -22,7 +22,7 @@ func TestBackoff(t *testing.T) {
 	for n := 1; n <= 24; n++ {
 		// the jitter makes each draw random, so the shape is checked over many draws
 		var maxSeen time.Duration
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			d := backoff(n)
 			if d <= 0 {
 				t.Fatalf("backoff(%d) returned %v, a non positive wait would spin", n, d)
@@ -44,7 +44,7 @@ func TestBackoff(t *testing.T) {
 
 	// once capped it stays capped, no overflow back to something tiny
 	for _, n := range []int{20, 40, 100, 1000} {
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			if d := backoff(n); d <= 0 || d > backoffMax {
 				t.Fatalf("backoff(%d) returned %v, the shift overflowed", n, d)
 			}
@@ -54,7 +54,7 @@ func TestBackoff(t *testing.T) {
 	// the jitter is real, a fleet that lost the same server must not come back in
 	// lockstep
 	seen := map[time.Duration]bool{}
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		seen[backoff(10)] = true
 	}
 	if len(seen) < 50 {

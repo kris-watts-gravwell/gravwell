@@ -8,6 +8,8 @@
 
 package dynamic
 
+import "slices"
+
 import "uuid"
 
 // The methods spoken between an ingester and a webserver over an authenticated RPC
@@ -136,21 +138,11 @@ func (q RunnerQuery) inGroup(group string) bool {
 	if group == `` {
 		return true
 	}
-	for _, g := range q.Groups {
-		if g == group {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(q.Groups, group)
 }
 
 func (q RunnerQuery) supports(kind string) bool {
-	for _, k := range q.Kinds {
-		if k == kind {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(q.Kinds, kind)
 }
 
 // RunnerSet is the answer to a RunnerQuery.

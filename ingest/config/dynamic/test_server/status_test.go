@@ -17,7 +17,6 @@ import (
 
 	"uuid"
 
-	"github.com/gravwell/gravwell/v4/hosted"
 	"github.com/gravwell/gravwell/v4/hosted/plugins/tester"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
 	"github.com/gravwell/gravwell/v4/ingest/config/dynamic/server"
@@ -32,9 +31,9 @@ const testerKind = `Tester`
 func testerRunner(t *testing.T, id uuid.UUID, name, interval string) dynamic.RunnerDefinition {
 	t.Helper()
 	rd, err := dynamic.MapRunnerDefinition(testerKind, name, tester.Config{
-		BaseConfig:      hosted.BaseConfig{Ingester_UUID: id.String()},
-		SingleTagConfig: hosted.SingleTagConfig{Tag_Name: `test`},
-		Interval:        interval,
+		Ingester_UUID: id.String(),
+		Tag_Name:      `test`,
+		Interval:      interval,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -221,3 +221,85 @@ func TestRemoteMarkerIsInvisibleToTheLoader(t *testing.T) {
 		}
 	}
 }
+
+// TestLegacyMarkerStillOwnsItsFile covers the upgrade.  The marker used to open with a
+// semicolon and now opens with a hash, and a file already on disk carries whichever one
+// wrote it.  The marker is the only thing that says a file is the server's to delete, so
+// an ingester that stopped recognizing the old one would sweep nothing and load a deleted
+// configuration on every start, forever.
+func TestLegacyMarkerStillOwnsItsFile(t *testing.T) {
+	dir := t.TempDir()
+	dcm := newLoadManager(t, dir)
+	if err := dcm.RegisterKind(`mock`, false, mockRunner{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// a file exactly as an older ingester left it
+	stale := syncDef(t, `stale`, uuid.New(), `b`)
+	ini, err := stale.INI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pth := dcm.runnerPath(stale)
+	if err = writeConfFile(pth, legacyRemoteMarker+"\n"+ini); err != nil {
+		t.Fatal(err)
+	}
+	if !isRemoteConfig(pth) {
+		t.Fatal("a config carrying the old marker is no longer recognized as the server's")
+	}
+
+	// the server has since dropped it, and the sweep has to take it
+	live := syncDef(t, `live`, uuid.New(), `a`)
+	if err = dcm.Sync([]RunnerDefinition{live}); err != nil {
+		t.Fatal(err)
+	}
+	names := confNames(t, dir)
+	if len(names) != 1 {
+		t.Fatalf("the sweep left %v, want just the live runner", names)
+	}
+
+	// and a file the server still has is rewritten with the current marker
+	pth = dcm.runnerPath(live)
+	got, err := os.ReadFile(pth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(got), remoteMarker+"\n") {
+		t.Errorf("a rewritten config does not open with the current marker:\n%s", got)
+	}
+}
+
+// TestLegacyMarkerHealsOnRewrite is the other half: a configuration the server still has
+// keeps its file, and the next write moves it to the current marker rather than leaving
+// the old one on disk forever.
+func TestLegacyMarkerHealsOnRewrite(t *testing.T) {
+	dir := t.TempDir()
+	dcm := newLoadManager(t, dir)
+	if err := dcm.RegisterKind(`mock`, false, mockRunner{}); err != nil {
+		t.Fatal(err)
+	}
+
+	rd := syncDef(t, `kept`, uuid.New(), `a`)
+	ini, err := rd.INI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pth := dcm.runnerPath(rd)
+	if err = writeConfFile(pth, legacyRemoteMarker+"\n"+ini); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = dcm.Sync([]RunnerDefinition{rd}); err != nil {
+		t.Fatal(err)
+	}
+	if names := confNames(t, dir); len(names) != 1 {
+		t.Fatalf("a config the server still has was not kept: %v", names)
+	}
+	got, err := os.ReadFile(pth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(got), remoteMarker+"\n") {
+		t.Errorf("the old marker survived a rewrite:\n%s", got)
+	}
+}

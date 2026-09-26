@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -937,21 +938,11 @@ func parseAssignment(form url.Values) (a *dynamic.Assignment, err error) {
 }
 
 func containsUUID(set []uuid.UUID, v uuid.UUID) bool {
-	for _, cur := range set {
-		if cur == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(set, v)
 }
 
 func containsString(set []string, v string) bool {
-	for _, cur := range set {
-		if cur == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(set, v)
 }
 
 // del removes a configured runner.
