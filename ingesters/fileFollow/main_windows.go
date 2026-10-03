@@ -14,13 +14,13 @@ import (
 	"os"
 	"os/signal"
 	dbg "runtime/debug"
+	"uuid"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/debug"
 	"golang.org/x/sys/windows/svc/eventlog"
 
 	"github.com/crewjam/rfc5424"
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/ingest"
 	"github.com/gravwell/gravwell/v4/ingest/config/validate"
 	"github.com/gravwell/gravwell/v4/ingesters/version"

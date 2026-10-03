@@ -13,8 +13,8 @@ package plugins
 import (
 	"fmt"
 	"iter"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/hosted"
 
 	// include all the native hosted ingesters

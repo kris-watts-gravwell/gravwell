@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"uuid"
 
 	"github.com/google/renameio"
-	"github.com/google/uuid"
 )
 
 // SetIngesterUUID modifies the configuration file at loc, setting the

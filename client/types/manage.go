@@ -12,8 +12,6 @@ import (
 	"encoding/json/v2"
 	"sort"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 var (
@@ -27,13 +25,13 @@ type IndexerRequest struct {
 }
 
 type ReplicationState struct {
-	UUID    uuid.UUID
+	UUID    UUID
 	Entries uint64
 	Size    uint64
 }
 
 func (rs ReplicationState) IsZero() bool {
-	return rs.Entries == 0 && rs.Size == 0 && rs.UUID == uuid.Nil
+	return rs.Entries == 0 && rs.Size == 0 && rs.UUID == UUID{}
 }
 
 type ShardInfo struct {
@@ -128,11 +126,11 @@ type CalendarEntry struct {
 }
 
 type IndexerWellData struct {
-	UUID  uuid.UUID
+	UUID  UUID
 	Wells []WellInfo
 	//Key is the UUID of the remote system that we have replicated data for
 	//the value is the list of wells and their data
-	Replicated map[uuid.UUID][]WellInfo
+	Replicated map[UUID][]WellInfo
 }
 
 type SearchQueue struct {

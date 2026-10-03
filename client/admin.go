@@ -20,10 +20,9 @@ import (
 	"os"
 	"sync"
 	"time"
+	"uuid"
 
 	"github.com/gravwell/gravwell/v4/client/types"
-
-	"github.com/google/uuid"
 )
 
 const (

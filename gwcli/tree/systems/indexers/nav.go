@@ -10,7 +10,8 @@
 package indexers
 
 import (
-	"github.com/google/uuid"
+	"uuid"
+
 	"github.com/gravwell/gravwell/v4/client/types"
 	"github.com/gravwell/gravwell/v4/gwcli/action"
 	"github.com/gravwell/gravwell/v4/gwcli/connection"
@@ -75,7 +76,7 @@ func wells() action.Pair {
 							UUID uuid.UUID
 							Name string
 						}{
-							iwd.UUID,
+							uuid.UUID(iwd.UUID),
 							idxrName,
 						},
 						ID:          well.ID,

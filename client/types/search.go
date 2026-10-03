@@ -16,8 +16,6 @@ import (
 	"reflect"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 const (
@@ -142,7 +140,7 @@ type LaunchRequest struct {
 // the type returns metadata about the search as well as
 // this contains all the embedded
 type LaunchResponse struct {
-	SearchSessionID uuid.UUID `json:",omitempty"`
+	SearchSessionID UUID `json:",omitempty"`
 	// RefreshInterval is used to convey and optionally update the minimum interval
 	// required in between touching a search session.  This value defines how often a client
 	// must refresh thier search session before a search may be expired due to inactivity

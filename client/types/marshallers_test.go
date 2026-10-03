@@ -22,8 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/client/types"
 	"github.com/gravwell/gravwell/v4/ingest"
 	"github.com/gravwell/gravwell/v4/ingest/entry"
@@ -365,7 +365,7 @@ func TestOptionalNoTags(t *testing.T) {
 // Specifically, guarantees that empty/nil maps/slice marshal to {}/[].
 // Deterministic(true) is passed so output can be checked consistently.
 func TestDeadCustomMarshalers(t *testing.T) {
-	u := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	u := types.UUID(uuid.MustParse("11111111-1111-1111-1111-111111111111"))
 	farFuture := time.Date(10001, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -399,7 +399,7 @@ func TestDeadCustomMarshalers(t *testing.T) {
 			`{"UUID":"00000000-0000-0000-0000-000000000000","Wells":[],"Replicated":{}}`},
 		{"IndexerWellData populated Wells and Replicated round trip", types.IndexerWellData{
 			UUID: u, Wells: []types.WellInfo{{Name: "w1"}},
-			Replicated: map[uuid.UUID][]types.WellInfo{u: {{Name: "w2"}}},
+			Replicated: map[types.UUID][]types.WellInfo{u: {{Name: "w2"}}},
 		}, `{"UUID":"11111111-1111-1111-1111-111111111111","Wells":[{"ID":"","Name":"w1","Tags":[],"Shards":[],"Fragmentation":0}],"Replicated":{"11111111-1111-1111-1111-111111111111":[{"ID":"","Name":"w2","Tags":[],"Shards":[],"Fragmentation":0}]}}`},
 		{"ShardInfo zero value RemoteState is omitted entirely, not marshaled as {}", types.ShardInfo{},
 			`{"Name":"","Start":"0001-01-01T00:00:00Z","End":"0001-01-01T00:00:00Z","Entries":0,"Size":0,"Stored":0,"Cold":false,"Fragmentation":0}`},

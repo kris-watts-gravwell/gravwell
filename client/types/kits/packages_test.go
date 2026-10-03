@@ -16,9 +16,9 @@ import (
 	"io"
 	"os"
 	"testing"
+	"uuid"
 
 	"encoding/hex"
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/client/types"
 	"github.com/gravwell/gravwell/v4/ingesters/utils"
 )

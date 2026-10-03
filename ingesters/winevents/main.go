@@ -17,6 +17,7 @@ import (
 	dbg "runtime/debug"
 	"syscall"
 	"time"
+	"uuid"
 
 	// Embed tzdata so that we don't rely on potentially broken timezone DBs on the host
 	_ "time/tzdata"
@@ -25,7 +26,6 @@ import (
 	"golang.org/x/sys/windows/svc/debug"
 	"golang.org/x/sys/windows/svc/eventlog"
 
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/ingest"
 	"github.com/gravwell/gravwell/v4/ingest/config/validate"
 	"github.com/gravwell/gravwell/v4/ingest/log"

@@ -16,8 +16,6 @@ import (
 
 	"crypto/rand"
 	"fmt"
-
-	"github.com/google/uuid"
 )
 
 const (
@@ -228,9 +226,9 @@ type Notification struct {
 	Expires     time.Time //when does it expire
 	IgnoreUntil time.Time //Don't display until after this time
 	Msg         string
-	Origin      uuid.UUID // which device sent it (currently only used on indexers)
-	Level       string    `json:",omitempty"` //generic keyword indicating how bad this notification is
-	Link        string    `json:",omitempty"`
+	Origin      UUID   // which device sent it (currently only used on indexers)
+	Level       string `json:",omitempty"` //generic keyword indicating how bad this notification is
+	Link        string `json:",omitempty"`
 }
 
 func (n *Notification) Expired() bool {
@@ -244,7 +242,7 @@ func (n *Notification) Ignored() bool {
 type BackendNotification struct {
 	Notification
 	Action NotificationAction
-	GUID   uuid.UUID
+	GUID   UUID
 }
 
 type NotificationAction uint32

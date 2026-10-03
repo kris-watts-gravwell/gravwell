@@ -9,8 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // SetIngesterUUID modifies the configuration file at loc, setting the

@@ -10,8 +10,7 @@ package types
 
 import (
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 type EventType string

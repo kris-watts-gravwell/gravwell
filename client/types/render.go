@@ -17,7 +17,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/ingest"
 	"github.com/gravwell/gravwell/v4/ingest/entry"
 	"github.com/gravwell/gravwell/v4/utils/jsoncompat"
@@ -276,7 +275,7 @@ type BaseResponse struct {
 	LimitDroppedRange TimeRange
 
 	// SessionID is the search Session ID, used for tracking "handles" on a search using REST interface
-	SessionID uuid.UUID
+	SessionID UUID
 
 	// Interval is the number of seconds between hits on the search control REST API for a given second
 	// that can transpire before we consider the search session abandoned
@@ -343,7 +342,7 @@ type IndexManagerStats struct {
 }
 
 type IdxStats struct {
-	UUID       uuid.UUID
+	UUID       UUID
 	Error      string `json:",omitempty"`
 	IndexStats []IndexManagerStats
 }

@@ -5,8 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 var (
@@ -14,14 +13,14 @@ var (
 )
 
 // ParseUUID attempts to parse an ingester UUID string.
-// Returns uuid.Nil for empty or invalid values.
+// Returns uuid.Nil() for empty or invalid values.
 func ParseUUID(s string) uuid.UUID {
 	if s != "" {
 		if u, err := uuid.Parse(s); err == nil {
 			return u
 		}
 	}
-	return uuid.Nil
+	return uuid.Nil()
 }
 
 // BaseConfig holds fields that are common to all plugin configs.

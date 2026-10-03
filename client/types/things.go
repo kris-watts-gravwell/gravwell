@@ -13,7 +13,6 @@ import (
 	"encoding/gob"
 	"time"
 
-	"github.com/google/uuid"
 	otypes "github.com/gravwell/gravwell/v3/client/types"
 	"github.com/gravwell/gravwell/v4/utils"
 )
@@ -52,7 +51,7 @@ func (a Access) Equal(b Access) bool {
 
 // Thing is an object wrapper to store items in the datastore, a common class of blobs.
 type Thing struct {
-	UUID        uuid.UUID
+	UUID        UUID
 	UID         int32
 	GIDs        []int32
 	Global      bool
@@ -64,7 +63,7 @@ type Thing struct {
 }
 
 type ThingHeader struct {
-	ThingUUID   uuid.UUID `json:",omitempty"`
+	ThingUUID   UUID `json:",omitempty"`
 	UID         int32
 	GIDs        []int32 `json:",omitempty"`
 	Global      bool

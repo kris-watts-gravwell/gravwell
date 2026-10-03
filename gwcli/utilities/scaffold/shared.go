@@ -6,10 +6,10 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"uuid"
 
 	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/crewjam/rfc5424"
-	"github.com/google/uuid"
 	"golang.org/x/exp/constraints"
 )
 

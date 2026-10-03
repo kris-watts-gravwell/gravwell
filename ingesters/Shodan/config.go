@@ -20,8 +20,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/ingest/config"
 )
 

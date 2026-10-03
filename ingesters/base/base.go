@@ -21,8 +21,8 @@ import (
 	"reflect"
 	"runtime"
 	"runtime/debug"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/ingest"
 	"github.com/gravwell/gravwell/v4/ingest/attach"
 	"github.com/gravwell/gravwell/v4/ingest/config"
@@ -250,7 +250,7 @@ func (ib *IngesterBase) GetMuxer() (igst *ingest.IngestMuxer, err error) {
 	ib.Debug("INSECURE skip TLS certificate verification: %v\n", cfg.InsecureSkipTLSVerification())
 	id, ok := cfg.IngesterUUID()
 	if !ok {
-		id = uuid.Nil //set to the zero UUID, we attempt to write one back during init, but if that fails... just use zero
+		id = uuid.Nil() //set to the zero UUID, we attempt to write one back during init, but if that fails... just use zero
 	} else if ib.emitUUID {
 		// got a good UUID and we are redirecting stderr (e.g. we should emit the UUID to stderr)
 		fmt.Fprintf(os.Stderr, "UUID:\t\t%v\n", id)
@@ -410,7 +410,7 @@ func (ib IngesterBase) AnnounceStartup() {
 	if version, err := host.KernelVersion(); err == nil {
 		params = append(params, log.KV("kernel-version", version))
 	}
-	if ib.id != uuid.Nil {
+	if ib.id != uuid.Nil() {
 		params = append(params, log.KV(`ingesteruuid`, ib.id))
 	}
 	if ib.sm != nil {
@@ -424,7 +424,7 @@ func (ib IngesterBase) AnnounceShutdown() {
 	params := []rfc5424.SDParam{
 		log.KV(`version`, version.GetVersion()),
 	}
-	if ib.id != uuid.Nil {
+	if ib.id != uuid.Nil() {
 		params = append(params, log.KV(`ingesteruuid`, ib.id))
 	}
 	ib.Logger.Warn("exiting", params...)

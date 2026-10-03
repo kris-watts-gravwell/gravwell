@@ -26,8 +26,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/chancacher"
 	"github.com/gravwell/gravwell/v4/ingest/attach"
 	"github.com/gravwell/gravwell/v4/ingest/config"
@@ -358,7 +358,7 @@ func newIngestMuxer(c MuxerConfig) (*IngestMuxer, error) {
 		bOut = bChan
 	}
 
-	id := uuid.Nil
+	id := uuid.Nil()
 	if c.IngesterUUID != `` {
 		if id, err = uuid.Parse(c.IngesterUUID); err != nil {
 			return nil, fmt.Errorf("failed to parse ingester UUID %w", err)

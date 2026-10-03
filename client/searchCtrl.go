@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/client/types"
 
 	"github.com/gravwell/gravwell/v4/ingest/entry"
@@ -1105,7 +1104,7 @@ type Search struct {
 	start     time.Time //start range of the query
 	end       time.Time //end range of query
 	interval  time.Duration
-	session   uuid.UUID
+	session   types.UUID
 	cli       *Client
 
 	types.SearchInfo

@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"math/rand"
 	"time"
+	"uuid"
 
 	rd "github.com/Pallinder/go-randomdata"
-	"github.com/google/uuid"
 )
 
 func genDataRegex(ts time.Time) []byte {

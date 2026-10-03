@@ -16,8 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/client/types"
 	"github.com/gravwell/gravwell/v4/gwcli/action"
 	"github.com/gravwell/gravwell/v4/gwcli/clilog"
@@ -32,9 +32,15 @@ import (
 var ( // set and reset by ValidateArgs()
 	start    time.Time
 	end      time.Time
-	idxrUUID uuid.NullUUID // should never be set if idxrName is unset
-	idxrName string        // should never be set if !idxrUUID.Valid
+	idxrUUID nullUUID // should never be set if idxrName is unset
+	idxrName string   // should never be set if !idxrUUID.Valid
 )
+
+// nullUUID is a UUID that may be unset.
+type nullUUID struct {
+	UUID  uuid.UUID
+	Valid bool
+}
 
 func newCalendarAction() action.Pair {
 	const (
@@ -62,7 +68,7 @@ func newCalendarAction() action.Pair {
 				if err != nil {
 					return nil, err
 				}
-				if wellData[idxrName].UUID != idxrUUID.UUID { // sanity check
+				if uuid.UUID(wellData[idxrName].UUID) != idxrUUID.UUID { // sanity check
 					err := fmt.Errorf("derived UUID (%v) does not match UUID of indexer associated to well data by name (%v)", idxrUUID.UUID, wellData[idxrName].UUID)
 					clilog.Writer.Errorf("%v", err)
 					return nil, err
@@ -121,7 +127,7 @@ func newCalendarAction() action.Pair {
 			},
 			// ValidateArgs does its namesake and sets/resets the package vars.
 			ValidateArgs: func(fs *pflag.FlagSet) (invalid string, err error) {
-				start, end, idxrUUID, idxrName = time.Time{}, time.Time{}, uuid.NullUUID{}, ""
+				start, end, idxrUUID, idxrName = time.Time{}, time.Time{}, nullUUID{}, ""
 				if fs.NArg() > 1 {
 					return "at most 1 bare argument (indexer name/UUID) may be provided", nil
 				} else if fs.NArg() == 1 {
@@ -189,7 +195,7 @@ func identifyIndexer(arg string) (string, uuid.UUID, error) {
 	if id, err := uuid.Parse(arg); err == nil {
 		// scan for name
 		for name, stat := range idxrStats {
-			if stat.UUID == id {
+			if uuid.UUID(stat.UUID) == id {
 				return name, id, nil
 			}
 		}
@@ -202,7 +208,7 @@ func identifyIndexer(arg string) (string, uuid.UUID, error) {
 	} else if stats.Error != "" {
 		return "", uuid.UUID{}, errors.New(stats.Error)
 	}
-	return arg, stats.UUID, nil
+	return arg, uuid.UUID(stats.UUID), nil
 }
 
 // validateTime attempts to parse a valid DateOnly time from the given flag.

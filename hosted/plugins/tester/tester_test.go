@@ -3,8 +3,8 @@ package tester
 import (
 	"testing"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/hosted"
 	"github.com/gravwell/gravwell/v4/hosted/configtest"
 )
@@ -157,7 +157,7 @@ func TestConfig_UUID(t *testing.T) {
 		{
 			name:         "empty UUID",
 			ingesterUUID: "",
-			want:         uuid.Nil,
+			want:         uuid.Nil(),
 		},
 		{
 			name:         "valid UUID",
@@ -167,12 +167,12 @@ func TestConfig_UUID(t *testing.T) {
 		{
 			name:         "invalid UUID",
 			ingesterUUID: "not-a-uuid",
-			want:         uuid.Nil,
+			want:         uuid.Nil(),
 		},
 		{
 			name:         "malformed UUID",
 			ingesterUUID: "550e8400-e29b-41d4",
-			want:         uuid.Nil,
+			want:         uuid.Nil(),
 		},
 	}
 

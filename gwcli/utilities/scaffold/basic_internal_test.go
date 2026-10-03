@@ -17,9 +17,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"uuid"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 	"github.com/gravwell/gravwell/v4/gwcli/action"
 	. "github.com/gravwell/gravwell/v4/gwcli/internal/testsupport"
 	"github.com/spf13/pflag"

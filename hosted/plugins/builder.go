@@ -9,7 +9,8 @@
 package plugins
 
 import (
-	"github.com/google/uuid"
+	"uuid"
+
 	"github.com/gravwell/gravwell/v4/hosted"
 	"github.com/gravwell/gravwell/v4/hosted/plugins/jamf"
 	"github.com/gravwell/gravwell/v4/hosted/plugins/mimecast"
