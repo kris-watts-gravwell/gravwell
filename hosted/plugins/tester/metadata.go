@@ -27,6 +27,7 @@ func (c *Config) RunnerMetadata() *dynamic.RunnerMetadata {
 		Icon:          Icon,
 		Documentation: DocLinks,
 		Version:       dynamic.Version(Version),
+		Description:   Description,
 	}
 }
 

@@ -29,6 +29,9 @@ const (
 	Name    = "msgraph"
 	ID      = "msgraph.ingesters.gravwell.io"
 	Version = "1.0.0"
+	// Description is one sentence on what this ingester collects, shown next to its name
+	// wherever a kind is offered for configuration.
+	Description = "Polls the Microsoft Graph Security API and ingests alerts, secure scores and control profiles."
 )
 
 func TimestampKey(ct ContentType) string { return string(ct) + "-timestamp" }

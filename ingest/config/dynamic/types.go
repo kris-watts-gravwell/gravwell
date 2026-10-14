@@ -133,6 +133,7 @@ type RunnerMetadata struct {
 	Icon          string                 `json:"icon,omitempty"`          // optional SVG icon for the ingester
 	Documentation []DocLink              `json:"documentation,omitempty"` // links to integration guides or ingester documentation
 	Version       types.CanonicalVersion `json:"version,omitzero"`        // the plugin's own version, zero when it does not declare one
+	Description   string                 `json:"description,omitempty"`   // one sentence on what the ingester collects, for a picker to show next to its name
 }
 
 // MetadataProvider is an OPTIONAL interface a plugin config may implement to describe

@@ -42,6 +42,9 @@ func TestEveryPluginDescribesItself(t *testing.T) {
 			if !md.Version.Enabled() {
 				t.Errorf(`version did not parse to anything, it must be canonical major.minor.point`)
 			}
+			if strings.TrimSpace(md.Description) == `` {
+				t.Error(`plugin has no Description, a picker would offer it by name alone`)
+			}
 			if len(md.Documentation) == 0 {
 				t.Error(`plugin offers no documentation links`)
 			}

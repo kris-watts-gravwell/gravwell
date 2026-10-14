@@ -97,13 +97,22 @@ type runnerView struct {
 
 // kindView is a registered kind as the menu draws it.
 type kindView struct {
-	Kind      string
-	Vars      int
-	Singleton bool
-	Version   string // empty when the plugin does not declare one
-	Icon      template.HTML
-	HasIcon   bool
-	Docs      []dynamic.DocLink
+	Kind        string
+	Vars        int
+	Singleton   bool
+	Version     string // empty when the plugin does not declare one
+	Description string // empty when the plugin does not declare one
+	Icon        template.HTML
+	HasIcon     bool
+	Docs        []dynamic.DocLink
+}
+
+// descriptionOf is the sentence a plugin offers about itself, or nothing.
+func descriptionOf(md *dynamic.RunnerMetadata) string {
+	if md == nil {
+		return ``
+	}
+	return md.Description
 }
 
 // iconFor renders a kind's icon, if it has one that survives sanitizing.  The markup is
@@ -268,10 +277,11 @@ type formView struct {
 
 	// the kind's own description, so the form says what is being configured rather than
 	// only naming it
-	Icon    template.HTML
-	HasIcon bool
-	Version string
-	Docs    []dynamic.DocLink
+	Icon        template.HTML
+	HasIcon     bool
+	Version     string
+	Description string
+	Docs        []dynamic.DocLink
 
 	// Targets are the ingesters that registered this kind, the only ones worth pinning a
 	// configuration of it to.  Selected marks the ones this runner is already pinned to.
@@ -328,10 +338,11 @@ func (u *UI) kinds(w http.ResponseWriter, r *http.Request) {
 	out := make([]kindView, 0, len(kinds))
 	for _, rd := range kinds {
 		kv := kindView{
-			Kind:      rd.Kind,
-			Vars:      len(rd.Variables),
-			Singleton: rd.Singleton,
-			Version:   versionOf(rd.Metadata),
+			Kind:        rd.Kind,
+			Vars:        len(rd.Variables),
+			Singleton:   rd.Singleton,
+			Version:     versionOf(rd.Metadata),
+			Description: descriptionOf(rd.Metadata),
 		}
 		kv.Icon, kv.HasIcon = iconFor(rd.Metadata)
 		if rd.Metadata != nil {
@@ -890,6 +901,7 @@ func (u *UI) save(w http.ResponseWriter, r *http.Request) {
 func (u *UI) describe(fv *formView, proto dynamic.RunnerDefinition) {
 	fv.Icon, fv.HasIcon = iconFor(proto.Metadata)
 	fv.Version = versionOf(proto.Metadata)
+	fv.Description = descriptionOf(proto.Metadata)
 	if proto.Metadata != nil {
 		fv.Docs = proto.Metadata.Documentation
 	}

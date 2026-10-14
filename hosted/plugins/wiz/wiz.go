@@ -34,6 +34,9 @@ const (
 	Name    string = `wiz`
 	ID      string = `wiz.ingesters.gravwell.io`
 	Version string = `1.0.0` // must be canonical version string with only major.minor.point
+	// Description is one sentence on what this ingester collects, shown next to its name
+	// wherever a kind is offered for configuration.
+	Description string = `Polls the Wiz GraphQL API and ingests cloud security findings and audit events as JSON.`
 
 	httpTimeout = 30 * time.Second
 	httpBackoff = 10 * time.Second

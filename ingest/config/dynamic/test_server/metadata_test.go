@@ -50,6 +50,9 @@ func TestKindMetadataReachesTheServer(t *testing.T) {
 	if !md.Version.Enabled() {
 		t.Error(`a declared version should report Enabled`)
 	}
+	if md.Description != tester.Description {
+		t.Errorf("description did not survive the round trip: %q, want %q", md.Description, tester.Description)
+	}
 	if len(md.Documentation) != 1 || md.Documentation[0].Name != `source` {
 		t.Errorf("documentation did not survive: %+v", md.Documentation)
 	}

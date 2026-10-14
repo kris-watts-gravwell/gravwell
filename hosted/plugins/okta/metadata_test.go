@@ -47,6 +47,9 @@ func TestRunnerMetadataIsComplete(t *testing.T) {
 	if len(md.Documentation) == 0 {
 		t.Error(`no documentation links`)
 	}
+	if md.Description != Description || Description == `` {
+		t.Errorf("description = %q, want the Description constant", md.Description)
+	}
 }
 
 // TestIconLicenseMatchesTheIcon keeps the provenance record honest.

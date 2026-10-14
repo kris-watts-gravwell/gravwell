@@ -25,6 +25,9 @@ const (
 	Name    string = `jamf`
 	ID      string = `jamf.ingesters.gravwell.io`
 	Version string = `1.0.0`
+	// Description is one sentence on what this ingester collects, shown next to its name
+	// wherever a kind is offered for configuration.
+	Description string = `Polls the Jamf Pro computers-inventory API and ingests managed device inventory records.`
 )
 
 // stateKeyLastEnd tracks the trailing edge of the last successfully
@@ -206,4 +209,3 @@ func splitRecord(raw json.RawMessage, sections []string, tags map[string]entry.E
 	}
 	return entries, nil
 }
-
