@@ -8,7 +8,11 @@
 
 package jamf
 
-import "github.com/gravwell/gravwell/v4/ingest/config/dynamic"
+import (
+	_ "embed" // for the //go:embed directive below, nothing from it is referenced
+
+	"github.com/gravwell/gravwell/v4/ingest/config/dynamic"
+)
 
 // DocLinks are the places to read about this plugin, shown next to it in a configuration
 // interface.  Nothing here is load bearing, a link that goes stale costs a click.
@@ -16,9 +20,14 @@ var DocLinks = []dynamic.DocLink{
 	{Name: `source`, Link: `https://github.com/gravwell/gravwell/tree/main/hosted/plugins/jamf`},
 }
 
-// Icon is this plugin's artwork.  It is empty until someone draws one, which is allowed:
-// an interface that has no icon for a plugin falls back to its name.  To add one, drop an
-// SVG in this directory and embed it the way the tester plugin does.
+// Icon is this plugin's artwork, read out of jamf.svg at build time.
+//
+// It is Jamf's own approved artwork, carried under the trademark grant in the Jamf API
+// License Agreement, and ICON_LICENSE.md beside it records where it came from and the
+// terms it is carried under.  Those terms forbid altering the logo, and the record names
+// the file's checksum, so the file is embedded verbatim and must not be rewritten.
+//
+//go:embed jamf.svg
 var Icon string
 
 // RunnerMetadata implements the optional dynamic.MetadataProvider interface, which is how
