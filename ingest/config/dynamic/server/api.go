@@ -147,8 +147,9 @@ func (a *API) connected(id uuid.UUID) bool {
 	return ok
 }
 
-// ForgetIngester drops everything held about an ingester this server is not currently
-// talking to: its registrations, the statuses it reported, and the ingester record.
+// ForgetIngester drops what an ingester this server is not currently talking to has
+// reported: its registrations and its statuses, and depending on the store its record
+// (see Store.ForgetIngester).
 //
 // A connected one is refused, and the reason is worth spelling out because it is invisible
 // from the outside.  The two delivery paths take an ingester's kinds from different places:

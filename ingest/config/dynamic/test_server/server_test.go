@@ -1508,3 +1508,60 @@ func TestPushGivesEachIngesterItsOwnDeadline(t *testing.T) {
 		t.Errorf("push took %v for %d ingesters at %v each, they were queued behind each other", elapsed, count, each)
 	}
 }
+
+// TestSingletonKindOpensItsConfiguration covers what clicking a singleton kind does once
+// it has been configured.  A singleton can only run once, so offering a second, empty form
+// is offering something the ingester will refuse; the click opens the configuration that
+// exists instead.
+func TestSingletonKindOpensItsConfiguration(t *testing.T) {
+	h := newHarness(t)
+	single := proto(t)
+	single.Singleton = true
+	if err := h.store.ReplaceKinds(uuid.New(), `edge`, []dynamic.RunnerDefinition{single}); err != nil {
+		t.Fatal(err)
+	}
+
+	// nothing configured yet, so the click still offers a new runner
+	code, body := h.get(t, `/ui/new?kind=testplugin`)
+	if code != http.StatusOK {
+		t.Fatalf("GET /ui/new = %d", code)
+	}
+	if !strings.Contains(body, `Create runner`) || strings.Contains(body, `Save changes`) {
+		t.Fatalf("an unconfigured singleton did not offer a new runner:\n%s", body)
+	}
+	id := formValue(t, body, `uuid`)
+
+	form := url.Values{}
+	form.Set(`kind`, `testplugin`)
+	form.Set(`uuid`, id)
+	form.Set(`name`, `only`)
+	form.Set(`var.Tag-Name`, `testtag`)
+	form.Set(`var.Token`, `hunter2`)
+	if code, body, _ = h.post(t, `/ui/save`, form); code != http.StatusOK || !strings.Contains(body, `Saved`) {
+		t.Fatalf("POST /ui/save = %d: %s", code, body)
+	}
+
+	// now the same click opens that configuration in edit mode
+	code, body = h.get(t, `/ui/new?kind=testplugin`)
+	if code != http.StatusOK {
+		t.Fatalf("GET /ui/new = %d", code)
+	}
+	if !strings.Contains(body, `Save changes`) || strings.Contains(body, `Create runner`) {
+		t.Errorf("a configured singleton did not open in edit mode:\n%s", body)
+	}
+	if got := formValue(t, body, `uuid`); got != id {
+		t.Errorf("opened runner %s, want the configured one %s", got, id)
+	}
+	if got := formValue(t, body, `name`); got != `only` {
+		t.Errorf("name = %q, want %q", got, `only`)
+	}
+
+	// a kind that is not a singleton keeps offering a new runner no matter how many exist
+	many := proto(t)
+	if err := h.store.ReplaceKinds(uuid.New(), `edge`, []dynamic.RunnerDefinition{many}); err != nil {
+		t.Fatal(err)
+	}
+	if _, body = h.get(t, `/ui/new?kind=testplugin`); !strings.Contains(body, `Create runner`) {
+		t.Errorf("a non-singleton kind stopped offering a new runner:\n%s", body)
+	}
+}

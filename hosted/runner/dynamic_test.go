@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -65,14 +66,18 @@ func TestRegisterDynamicPluginTypes(t *testing.T) {
 		t.Fatalf("registered %v, want every plugin in Configs %v", got, want)
 	}
 
-	// a kind is a description, it carries no identity and every plugin can run more than
-	// one instance at a time, so none of them are singletons
+	// a kind is a description, it carries no identity, and whether it is a singleton is
+	// whatever its config type declared, see plugins.SingletonConfig
+	singleton := map[string]bool{}
+	for _, pk := range mustKinds(t) {
+		singleton[pk.Kind] = pk.Singleton
+	}
 	for _, rd := range nm.Available {
 		if rd.Name != `` || rd.UUID != uuid.Nil() {
 			t.Errorf("%s: a kind should carry no identity, got name %q uuid %v", rd.Kind, rd.Name, rd.UUID)
 		}
-		if rd.Singleton {
-			t.Errorf("%s: plugins are held in maps, none of them are singletons", rd.Kind)
+		if rd.Singleton != singleton[rd.Kind] {
+			t.Errorf("%s: registered singleton = %v, the config type says %v", rd.Kind, rd.Singleton, singleton[rd.Kind])
 		}
 		if len(rd.Variables) == 0 {
 			t.Errorf("%s: registered with no variables, its config did not enumerate", rd.Kind)
@@ -148,13 +153,23 @@ func TestDynamicRunnerLoadsEveryPluginConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// two instances of every plugin, the names have to survive as the map keys
+	// two instances of every plugin that allows it, the names have to survive as the map
+	// keys.  A singleton takes the first and refuses the second.
 	names := []string{`prod`, `dev`}
+	wantNames := map[string][]string{}
 	for _, pk := range kinds {
 		for _, name := range names {
-			if err = dm.RegisterRunner(name, pk.Kind, uuid.New(), pk.Config); err != nil {
+			err = dm.RegisterRunner(name, pk.Kind, uuid.New(), pk.Config)
+			if pk.Singleton && len(wantNames[pk.Kind]) == 1 {
+				if !errors.Is(err, dynamic.ErrSingletonRegistered) {
+					t.Fatalf("%s %s: a second singleton registration returned %v, want ErrSingletonRegistered", pk.Kind, name, err)
+				}
+				continue
+			}
+			if err != nil {
 				t.Fatalf("%s %s: %v", pk.Kind, name, err)
 			}
+			wantNames[pk.Kind] = append(wantNames[pk.Kind], name)
 		}
 	}
 
@@ -173,11 +188,11 @@ func TestDynamicRunnerLoadsEveryPluginConfig(t *testing.T) {
 			continue
 		}
 		m := rv.Field(i)
-		if m.Len() != len(names) {
-			t.Errorf("Configs.%s holds %d configs, want %d", f.Name, m.Len(), len(names))
+		if m.Len() != len(wantNames[f.Name]) {
+			t.Errorf("Configs.%s holds %d configs, want %d", f.Name, m.Len(), len(wantNames[f.Name]))
 			continue
 		}
-		for _, name := range names {
+		for _, name := range wantNames[f.Name] {
 			e := m.MapIndex(reflect.ValueOf(name))
 			if !e.IsValid() {
 				t.Errorf("Configs.%s is missing %q", f.Name, name)
@@ -278,19 +293,24 @@ func TestConfigsIngesterCountCoversEveryPlugin(t *testing.T) {
 		t.Fatal(err)
 	}
 	names := []string{`prod`, `dev`}
+	var want int
 	for _, pk := range kinds {
 		for _, name := range names {
 			if err = dm.RegisterRunner(name, pk.Kind, uuid.New(), pk.Config); err != nil {
+				if pk.Singleton && errors.Is(err, dynamic.ErrSingletonRegistered) {
+					continue // a singleton only takes one
+				}
 				t.Fatalf("%s %s: %v", pk.Kind, name, err)
 			}
+			want++
 		}
 	}
 	var cfgs plugins.Configs
 	if err = config.LoadConfigOverlays(&cfgs, dir); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := cfgs.IngesterCount(), len(kinds)*len(names); got != want {
-		t.Errorf("IngesterCount = %d, want %d, one config per plugin per name", got, want)
+	if got := cfgs.IngesterCount(); got != want {
+		t.Errorf("IngesterCount = %d, want %d, one config per registration that was accepted", got, want)
 	}
 
 	// an empty config set counts nothing, that is what makes the startup gate meaningful
@@ -483,4 +503,14 @@ func statusOf(dm dynamic.Manager, id uuid.UUID) (dynamic.RunnerStatus, bool) {
 		}
 	}
 	return dynamic.RunnerStatus{}, false
+}
+
+// mustKinds is plugins.Kinds or a fatal test.
+func mustKinds(t *testing.T) []plugins.PluginKind {
+	t.Helper()
+	kinds, err := plugins.Kinds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kinds
 }

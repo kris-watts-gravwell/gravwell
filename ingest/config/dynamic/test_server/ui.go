@@ -746,6 +746,19 @@ func (u *UI) newRunner(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
+	// a singleton may only be configured once, so once it has been the kind is a way
+	// to reach that configuration rather than an offer to make a second one the
+	// ingester would refuse.  Open the one it has instead.
+	if proto.Singleton {
+		cur, found, lerr := u.firstRunnerOfKind(proto.Kind)
+		if lerr != nil {
+			u.fail(w, lerr)
+			return
+		} else if found {
+			u.renderEdit(w, cur)
+			return
+		}
+	}
 	targets, classes, other, err := u.assignmentView(proto.Kind, nil)
 	if err != nil {
 		u.fail(w, err)
@@ -775,6 +788,27 @@ func (u *UI) editRunner(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
+	u.renderEdit(w, cur)
+}
+
+// firstRunnerOfKind is the configured runner a singleton kind opens onto.  Runners come
+// back ordered by kind then name, so when more than one somehow exists the first by
+// name is the one chosen, and it is the same one every time.
+func (u *UI) firstRunnerOfKind(kind string) (rd dynamic.RunnerDefinition, found bool, err error) {
+	var all []dynamic.RunnerDefinition
+	if all, err = u.store.Runners(); err != nil {
+		return
+	}
+	for _, cur := range all {
+		if cur.Kind == kind {
+			return cur, true, nil
+		}
+	}
+	return
+}
+
+// renderEdit draws the form for a runner that already exists.
+func (u *UI) renderEdit(w http.ResponseWriter, cur dynamic.RunnerDefinition) {
 	proto, err := u.store.Kind(cur.Kind)
 	if err != nil {
 		// the runner outlived its registration, which happens when an ingester that

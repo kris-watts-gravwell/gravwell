@@ -96,3 +96,10 @@ func (c *Config) Tags() (tags []string) {
 	}
 	return
 }
+
+// Singleton implements plugins.SingletonConfig: only one runner of this kind may be
+// configured at a time, so a dynamic configuration interface offers the one that exists
+// rather than a second the ingester would refuse.
+func (c *Config) Singleton() bool { return true }
+
+var _ interface{ Singleton() bool } = (*Config)(nil) // compile time interface check

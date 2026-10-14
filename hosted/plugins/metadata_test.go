@@ -73,3 +73,34 @@ func TestEveryPluginDescribesItself(t *testing.T) {
 		})
 	}
 }
+
+// TestSingletonKinds pins down which plugins may only be configured once.  The flag is
+// derived from the config type, so a plugin that stops implementing SingletonConfig
+// silently stops being one, and this is what notices.
+func TestSingletonKinds(t *testing.T) {
+	want := map[string]bool{
+		`Okta`: true, `Jamf`: true, `Mimecast`: true, `MSGraph`: true, `Wiz`: true,
+		`Tester`: false, `SQS`: false,
+	}
+	kinds, err := Kinds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, pk := range kinds {
+		seen[pk.Kind] = true
+		exp, known := want[pk.Kind]
+		if !known {
+			t.Errorf("kind %s is not in the singleton table, add it", pk.Kind)
+			continue
+		}
+		if pk.Singleton != exp {
+			t.Errorf("kind %s singleton = %v, want %v", pk.Kind, pk.Singleton, exp)
+		}
+	}
+	for k := range want {
+		if !seen[k] {
+			t.Errorf("kind %s was not enumerated", k)
+		}
+	}
+}

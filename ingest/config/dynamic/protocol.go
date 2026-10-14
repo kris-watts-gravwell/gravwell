@@ -115,8 +115,18 @@ type RunnerQuery struct {
 // its assignment sets.  A list that is present excludes everything not in it, which is
 // the point: a configuration pinned to three UUIDs must never reach a fourth ingester.
 // A list that is absent is not a filter at all.
+//
+// A singleton is the exception to "absent is not a filter".  It must run on exactly one
+// ingester across the fleet, so it matches only while it is pinned to exactly one UUID,
+// and an unpinned singleton matches nobody.  Without this the rule below would hand an
+// unassigned singleton to every ingester that registered the kind, which for a plugin
+// pulling from an API with a cursor means ingesting every event once per ingester.  Who
+// it gets pinned to is the server's decision; this rule only refuses to guess.
 func (q RunnerQuery) Matches(rd RunnerDefinition) bool {
 	if !q.supports(rd.Kind) {
+		return false
+	}
+	if rd.Singleton && (rd.Assigned == nil || len(rd.Assigned.UUIDs) != 1) {
 		return false
 	}
 	if rd.Assigned.Empty() {
