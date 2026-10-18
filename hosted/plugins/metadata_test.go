@@ -74,7 +74,8 @@ func TestEveryPluginDescribesItself(t *testing.T) {
 	}
 }
 
-// TestSingletonKinds pins down which plugins may only be configured once.  The flag is
+// TestSingletonKinds pins down which plugins deliver each configuration to exactly one
+// ingester, see SingletonConfig.  The flag is
 // derived from the config type, so a plugin that stops implementing SingletonConfig
 // silently stops being one, and this is what notices.
 func TestSingletonKinds(t *testing.T) {

@@ -1509,59 +1509,76 @@ func TestPushGivesEachIngesterItsOwnDeadline(t *testing.T) {
 	}
 }
 
-// TestSingletonKindOpensItsConfiguration covers what clicking a singleton kind does once
-// it has been configured.  A singleton can only run once, so offering a second, empty form
-// is offering something the ingester will refuse; the click opens the configuration that
-// exists instead.
-func TestSingletonKindOpensItsConfiguration(t *testing.T) {
+// TestSingletonMustBePinnedToOneIngester covers what singleton means: a configuration of
+// that kind is delivered to exactly one ingester.  Several configurations may exist, but
+// one that is unpinned or pinned to two would be accepted and then reach nobody, because
+// the matcher refuses to guess, so the form refuses it where the operator can see why.
+func TestSingletonMustBePinnedToOneIngester(t *testing.T) {
 	h := newHarness(t)
 	single := proto(t)
 	single.Singleton = true
-	if err := h.store.ReplaceKinds(uuid.New(), `edge`, []dynamic.RunnerDefinition{single}); err != nil {
-		t.Fatal(err)
+	a, b := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{a, b} {
+		if err := h.store.ReplaceKinds(id, `edge`, []dynamic.RunnerDefinition{single}); err != nil {
+			t.Fatal(err)
+		}
 	}
-
-	// nothing configured yet, so the click still offers a new runner
 	code, body := h.get(t, `/ui/new?kind=testplugin`)
 	if code != http.StatusOK {
 		t.Fatalf("GET /ui/new = %d", code)
 	}
-	if !strings.Contains(body, `Create runner`) || strings.Contains(body, `Save changes`) {
-		t.Fatalf("an unconfigured singleton did not offer a new runner:\n%s", body)
-	}
-	id := formValue(t, body, `uuid`)
-
-	form := url.Values{}
-	form.Set(`kind`, `testplugin`)
-	form.Set(`uuid`, id)
-	form.Set(`name`, `only`)
-	form.Set(`var.Tag-Name`, `testtag`)
-	form.Set(`var.Token`, `hunter2`)
-	if code, body, _ = h.post(t, `/ui/save`, form); code != http.StatusOK || !strings.Contains(body, `Saved`) {
-		t.Fatalf("POST /ui/save = %d: %s", code, body)
+	if !strings.Contains(body, `is a singleton`) {
+		t.Errorf("the form does not say the kind is a singleton:\n%s", body)
 	}
 
-	// now the same click opens that configuration in edit mode
-	code, body = h.get(t, `/ui/new?kind=testplugin`)
-	if code != http.StatusOK {
-		t.Fatalf("GET /ui/new = %d", code)
+	save := func(name string, pins ...uuid.UUID) string {
+		t.Helper()
+		form := url.Values{}
+		form.Set(`kind`, `testplugin`)
+		form.Set(`uuid`, uuid.New().String())
+		form.Set(`name`, name)
+		form.Set(`var.Tag-Name`, `testtag`)
+		form.Set(`var.Token`, `hunter2`)
+		for _, p := range pins {
+			form.Add(`assign.uuid`, p.String())
+		}
+		code, body, _ := h.post(t, `/ui/save`, form)
+		if code != http.StatusOK {
+			t.Fatalf("POST /ui/save = %d: %s", code, body)
+		}
+		return body
 	}
-	if !strings.Contains(body, `Save changes`) || strings.Contains(body, `Create runner`) {
-		t.Errorf("a configured singleton did not open in edit mode:\n%s", body)
+	if body = save(`unpinned`); !strings.Contains(body, `exactly one ingester`) || strings.Contains(body, `Saved`) {
+		t.Errorf("an unpinned singleton was not refused:\n%s", body)
 	}
-	if got := formValue(t, body, `uuid`); got != id {
-		t.Errorf("opened runner %s, want the configured one %s", got, id)
+	if body = save(`two`, a, b); !strings.Contains(body, `exactly one ingester`) || strings.Contains(body, `Saved`) {
+		t.Errorf("a singleton pinned to two ingesters was not refused:\n%s", body)
 	}
-	if got := formValue(t, body, `name`); got != `only` {
-		t.Errorf("name = %q, want %q", got, `only`)
+	if _, body = h.get(t, `/ui/runners`); !strings.Contains(body, `Nothing configured`) {
+		t.Fatalf("a refused save was stored:\n%s", body)
 	}
 
-	// a kind that is not a singleton keeps offering a new runner no matter how many exist
-	many := proto(t)
-	if err := h.store.ReplaceKinds(uuid.New(), `edge`, []dynamic.RunnerDefinition{many}); err != nil {
+	// pinned to one each, two configurations of the kind are fine
+	if body = save(`first`, a); !strings.Contains(body, `Saved`) {
+		t.Errorf("a singleton pinned to one ingester was refused:\n%s", body)
+	}
+	if body = save(`second`, b); !strings.Contains(body, `Saved`) {
+		t.Errorf("a second configuration of a singleton kind was refused:\n%s", body)
+	}
+	runners, err := h.store.Runners()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, body = h.get(t, `/ui/new?kind=testplugin`); !strings.Contains(body, `Create runner`) {
-		t.Errorf("a non-singleton kind stopped offering a new runner:\n%s", body)
+	if len(runners) != 2 {
+		t.Fatalf("stored %d runners, want 2", len(runners))
+	}
+	// and each reaches exactly its own ingester
+	for _, rd := range runners {
+		for _, id := range []uuid.UUID{a, b} {
+			q := dynamic.RunnerQuery{ID: id, Class: `edge`, Kinds: []string{`testplugin`}}
+			if got, want := q.Matches(rd), rd.Assigned.UUIDs[0] == id; got != want {
+				t.Errorf("%s reaches %v = %v, want %v", rd.Name, id, got, want)
+			}
+		}
 	}
 }

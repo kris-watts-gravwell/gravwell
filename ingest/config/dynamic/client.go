@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"math/rand"
 	"net/url"
 	"os"
@@ -320,12 +319,6 @@ func (dcm *DynamicConfigManager) sync(remote []RunnerDefinition, sweep bool) err
 	// able to tell "the server sent something broken" from "the server deleted this",
 	// which look identical if all you know is that it is not in wanted.
 	rejected := make(map[uuid.UUID]RunnerStatus)
-	// refused holds the second and later definitions of a singleton kind, and why.  They
-	// are kept apart from rejected because they are handled the opposite way: a rejected
-	// runner's last good copy is held on to, a refused one is a duplicate and holding on
-	// to its copy would be exactly the double registration being refused.
-	refused := make(map[uuid.UUID]RunnerStatus)
-	holders := dcm.singletonHoldersLocked(remote)
 
 	for _, rd := range remote {
 		if rd.UUID == uuid.Nil() {
@@ -333,14 +326,6 @@ func (dcm *DynamicConfigManager) sync(remote []RunnerDefinition, sweep bool) err
 			// back, which leaves a log line as the only place to say anything
 			dcm.lgr.Warn("dynamic config skipping a runner with no UUID",
 				log.KV("kind", rd.Kind), log.KV("name", rd.Name))
-			continue
-		}
-		if holder, taken := holders[rd.Kind]; taken && holder != rd.UUID {
-			rerr := fmt.Errorf("%w: %s is a singleton and %v already holds it", ErrSingletonRegistered, rd.Kind, holder)
-			dcm.lgr.Warn("dynamic config refused a second runner of a singleton kind",
-				log.KV("kind", rd.Kind), log.KV("name", rd.Name),
-				log.KV("uuid", rd.UUID), log.KV("holder", holder))
-			refused[rd.UUID] = runnerStatus(rd, rerr)
 			continue
 		}
 		blob, rerr := rd.INI()
@@ -373,11 +358,6 @@ func (dcm *DynamicConfigManager) sync(remote []RunnerDefinition, sweep bool) err
 			continue
 		}
 		want, still := wanted[cur.UUID]
-		if _, dup := refused[cur.UUID]; dup {
-			// a duplicate of a singleton that got in before the rule did.  It goes the
-			// way of a deleted runner: keeping its file is the double registration.
-			still = false
-		}
 		if !still {
 			// deleted upstream
 			if cur.backingFile != `` {
@@ -449,10 +429,6 @@ func (dcm *DynamicConfigManager) sync(remote []RunnerDefinition, sweep bool) err
 	// read rather than baked in here, see Statuses: merging at the point of use is what
 	// lets a repaired configuration stop being reported without anything having to go
 	// back and unpick an entry that was written into this slice earlier.
-	// a refused duplicate is reported like a rejection, the server needs to hear why it
-	// is not running.  It is merged here rather than earlier because the reconcile above
-	// treats the two differently.
-	maps.Copy(rejected, refused)
 	dcm.statuses = buildStatuses(kept, rejected)
 
 	// kept is the truth about the directory whether or not anything moved.  It has to be
@@ -467,46 +443,6 @@ func (dcm *DynamicConfigManager) sync(remote []RunnerDefinition, sweep bool) err
 		log.KV("updated", updated), log.KV("removed", removed))
 	dcm.bump()
 	return nil
-}
-
-// singletonHoldersLocked decides, for every singleton kind the server sent, which one
-// definition gets to hold it.  The caller holds the lock.
-//
-// A runner this ingester registered for itself holds its kind outright: the server does
-// not know about it and is not entitled to displace it.  Otherwise a definition that is
-// already configured here is preferred over a newcomer, so that a server adding a second
-// Okta does not knock out the Okta that is running, and failing that the first one the
-// server listed wins, which is a stable choice because the server sorts what it sends.
-func (dcm *DynamicConfigManager) singletonHoldersLocked(remote []RunnerDefinition) map[string]uuid.UUID {
-	holders := map[string]uuid.UUID{}
-	singleton := func(kind string) bool {
-		rk, ok := dcm.lookupKindLocked(kind)
-		return ok && rk.Singleton
-	}
-	configured := make(map[uuid.UUID]bool, len(dcm.Configured))
-	for _, cur := range dcm.Configured {
-		configured[cur.UUID] = true
-		if !cur.remote && singleton(cur.Kind) {
-			holders[cur.Kind] = cur.UUID
-		}
-	}
-	for _, rd := range remote {
-		if rd.UUID == uuid.Nil() || !singleton(rd.Kind) {
-			continue
-		}
-		if _, taken := holders[rd.Kind]; !taken && configured[rd.UUID] {
-			holders[rd.Kind] = rd.UUID
-		}
-	}
-	for _, rd := range remote {
-		if rd.UUID == uuid.Nil() || !singleton(rd.Kind) {
-			continue
-		}
-		if _, taken := holders[rd.Kind]; !taken {
-			holders[rd.Kind] = rd.UUID
-		}
-	}
-	return holders
 }
 
 // runnerPath is where a runner's config lives, kind_name_uuid.conf in the storage

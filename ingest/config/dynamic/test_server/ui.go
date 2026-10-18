@@ -282,6 +282,7 @@ type formView struct {
 	Version     string
 	Description string
 	Docs        []dynamic.DocLink
+	Singleton   bool // each configuration of this kind goes to exactly one ingester
 
 	// Targets are the ingesters that registered this kind, the only ones worth pinning a
 	// configuration of it to.  Selected marks the ones this runner is already pinned to.
@@ -746,19 +747,6 @@ func (u *UI) newRunner(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
-	// a singleton may only be configured once, so once it has been the kind is a way
-	// to reach that configuration rather than an offer to make a second one the
-	// ingester would refuse.  Open the one it has instead.
-	if proto.Singleton {
-		cur, found, lerr := u.firstRunnerOfKind(proto.Kind)
-		if lerr != nil {
-			u.fail(w, lerr)
-			return
-		} else if found {
-			u.renderEdit(w, cur)
-			return
-		}
-	}
 	targets, classes, other, err := u.assignmentView(proto.Kind, nil)
 	if err != nil {
 		u.fail(w, err)
@@ -789,22 +777,6 @@ func (u *UI) editRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.renderEdit(w, cur)
-}
-
-// firstRunnerOfKind is the configured runner a singleton kind opens onto.  Runners come
-// back ordered by kind then name, so when more than one somehow exists the first by
-// name is the one chosen, and it is the same one every time.
-func (u *UI) firstRunnerOfKind(kind string) (rd dynamic.RunnerDefinition, found bool, err error) {
-	var all []dynamic.RunnerDefinition
-	if all, err = u.store.Runners(); err != nil {
-		return
-	}
-	for _, cur := range all {
-		if cur.Kind == kind {
-			return cur, true, nil
-		}
-	}
-	return
 }
 
 // renderEdit draws the form for a runner that already exists.
@@ -876,6 +848,14 @@ func (u *UI) save(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
+	// a singleton configuration is delivered to exactly one ingester.  The matcher on
+	// the poll already refuses to deliver one that is not pinned, so an unpinned save
+	// would be accepted and then silently reach nobody; refuse it here where the
+	// operator can see why.  See dynamic.RunnerQuery.Matches.
+	if proto.Singleton && (assigned == nil || len(assigned.UUIDs) != 1) {
+		u.fail(w, fmt.Errorf("%s is a singleton: each configuration must be assigned to exactly one ingester", proto.Kind))
+		return
+	}
 	rd := dynamic.RunnerDefinition{
 		Kind:      proto.Kind,
 		Name:      name,
@@ -936,6 +916,7 @@ func (u *UI) describe(fv *formView, proto dynamic.RunnerDefinition) {
 	fv.Icon, fv.HasIcon = iconFor(proto.Metadata)
 	fv.Version = versionOf(proto.Metadata)
 	fv.Description = descriptionOf(proto.Metadata)
+	fv.Singleton = proto.Singleton
 	if proto.Metadata != nil {
 		fv.Docs = proto.Metadata.Documentation
 	}

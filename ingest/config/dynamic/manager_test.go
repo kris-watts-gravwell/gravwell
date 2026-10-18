@@ -304,9 +304,6 @@ func TestDynamicRegisterRunnerRejects(t *testing.T) {
 		{`duplicate name`, ErrRunnerRegistered, func() error {
 			return dcm.RegisterRunner(`prod`, `okta`, uuid.New(), mockRunner{})
 		}},
-		{`second singleton`, ErrSingletonRegistered, func() error {
-			return dcm.RegisterRunner(`two`, `wiz`, uuid.New(), mockRunner{})
-		}},
 		{`empty name`, nil, func() error {
 			return dcm.RegisterRunner(``, `okta`, uuid.New(), mockRunner{})
 		}},
@@ -566,7 +563,8 @@ func TestNopManagerRegisterRunner(t *testing.T) {
 		t.Errorf("the same name under a different kind should register: %v", err)
 	}
 
-	// a singleton kind takes exactly one runner, whatever it is named
+	// a singleton kind takes as many differently named runners as any other, the flag
+	// is about where each configuration is delivered rather than how many there are
 	if err := n.RegisterKind(`wiz`, true, mockRunner{}); err != nil {
 		t.Fatal(err)
 	}
@@ -576,12 +574,12 @@ func TestNopManagerRegisterRunner(t *testing.T) {
 	if !n.Configured[3].Singleton {
 		t.Error(`the singleton flag did not carry to the configured runner`)
 	}
-	if err := n.RegisterRunner(`two`, `wiz`, uuid.Nil(), mockRunner{}); !errors.Is(err, ErrSingletonRegistered) {
-		t.Errorf("want ErrSingletonRegistered, got %v", err)
+	if err := n.RegisterRunner(`two`, `wiz`, uuid.Nil(), mockRunner{}); err != nil {
+		t.Errorf("a second singleton configuration should register: %v", err)
 	}
 
-	if len(n.Configured) != 4 {
-		t.Errorf("Configured = %d, want 4", len(n.Configured))
+	if len(n.Configured) != 5 {
+		t.Errorf("Configured = %d, want 5", len(n.Configured))
 	}
 }
 

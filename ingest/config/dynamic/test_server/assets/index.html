@@ -208,9 +208,15 @@
 		</label>
 		<div class="assign">
 			<span class="lbl">Assignment</span>
+			{{- if .Singleton }}
+			<span class="hint">{{.Kind}} is a singleton: each configuration is delivered to exactly
+				one ingester, so pick one below. Several configurations of {{.Kind}} may exist,
+				each pinned to its own ingester.</span>
+			{{- else }}
 			<span class="hint">Leave both empty to send this configuration to every ingester that can
 				run {{.Kind}}. Each list that has anything selected becomes a filter, and an
 				ingester has to satisfy every filter to receive the configuration.</span>
+			{{- end }}
 			<div class="two">
 				<label>
 					<span class="lbl">Ingesters</span>

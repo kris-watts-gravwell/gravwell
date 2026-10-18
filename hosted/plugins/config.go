@@ -262,9 +262,13 @@ func Kinds() (ks []PluginKind, err error) {
 	return
 }
 
-// SingletonConfig is an OPTIONAL interface a plugin config may implement to say that only
-// one runner of its kind may be configured at a time.  Kinds asks for it on a pointer to
-// the zero config, the way plugin configs implement everything else.
+// SingletonConfig is an OPTIONAL interface a plugin config may implement to say that each
+// configuration of its kind is delivered to exactly one runner rather than to every
+// ingester that can run it.  Any number of configurations may exist, each pinned to its
+// own ingester; what a singleton rules out is one configuration fanning out, which for a
+// plugin polling an API with a cursor would ingest every event once per ingester.  Kinds
+// asks for it on a pointer to the zero config, the way plugin configs implement
+// everything else.
 type SingletonConfig interface {
 	Singleton() bool
 }

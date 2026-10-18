@@ -10,7 +10,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -153,23 +152,15 @@ func TestDynamicRunnerLoadsEveryPluginConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// two instances of every plugin that allows it, the names have to survive as the map
-	// keys.  A singleton takes the first and refuses the second.
+	// two instances of every plugin, the names have to survive as the map keys.  A
+	// singleton kind is no exception: singleton says each configuration is delivered
+	// to exactly one runner, not that only one may be configured.
 	names := []string{`prod`, `dev`}
-	wantNames := map[string][]string{}
 	for _, pk := range kinds {
 		for _, name := range names {
-			err = dm.RegisterRunner(name, pk.Kind, uuid.New(), pk.Config)
-			if pk.Singleton && len(wantNames[pk.Kind]) == 1 {
-				if !errors.Is(err, dynamic.ErrSingletonRegistered) {
-					t.Fatalf("%s %s: a second singleton registration returned %v, want ErrSingletonRegistered", pk.Kind, name, err)
-				}
-				continue
-			}
-			if err != nil {
+			if err = dm.RegisterRunner(name, pk.Kind, uuid.New(), pk.Config); err != nil {
 				t.Fatalf("%s %s: %v", pk.Kind, name, err)
 			}
-			wantNames[pk.Kind] = append(wantNames[pk.Kind], name)
 		}
 	}
 
@@ -188,11 +179,11 @@ func TestDynamicRunnerLoadsEveryPluginConfig(t *testing.T) {
 			continue
 		}
 		m := rv.Field(i)
-		if m.Len() != len(wantNames[f.Name]) {
-			t.Errorf("Configs.%s holds %d configs, want %d", f.Name, m.Len(), len(wantNames[f.Name]))
+		if m.Len() != len(names) {
+			t.Errorf("Configs.%s holds %d configs, want %d", f.Name, m.Len(), len(names))
 			continue
 		}
-		for _, name := range wantNames[f.Name] {
+		for _, name := range names {
 			e := m.MapIndex(reflect.ValueOf(name))
 			if !e.IsValid() {
 				t.Errorf("Configs.%s is missing %q", f.Name, name)
@@ -293,24 +284,19 @@ func TestConfigsIngesterCountCoversEveryPlugin(t *testing.T) {
 		t.Fatal(err)
 	}
 	names := []string{`prod`, `dev`}
-	var want int
 	for _, pk := range kinds {
 		for _, name := range names {
 			if err = dm.RegisterRunner(name, pk.Kind, uuid.New(), pk.Config); err != nil {
-				if pk.Singleton && errors.Is(err, dynamic.ErrSingletonRegistered) {
-					continue // a singleton only takes one
-				}
 				t.Fatalf("%s %s: %v", pk.Kind, name, err)
 			}
-			want++
 		}
 	}
 	var cfgs plugins.Configs
 	if err = config.LoadConfigOverlays(&cfgs, dir); err != nil {
 		t.Fatal(err)
 	}
-	if got := cfgs.IngesterCount(); got != want {
-		t.Errorf("IngesterCount = %d, want %d, one config per registration that was accepted", got, want)
+	if got, want := cfgs.IngesterCount(), len(kinds)*len(names); got != want {
+		t.Errorf("IngesterCount = %d, want %d, one config per plugin per name", got, want)
 	}
 
 	// an empty config set counts nothing, that is what makes the startup gate meaningful

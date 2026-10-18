@@ -118,7 +118,7 @@ type RunnerDefinition struct {
 	Kind      string    // what configuration type this represents
 	Name      string    // config name (key in config map for a given Kind)
 	UUID      uuid.UUID `json:",omitzero"`
-	Singleton bool      // whether more than one of this Kind can run at a time
+	Singleton bool      // each configuration of this Kind is delivered to exactly one runner, see RunnerQuery.Matches
 	Variables []Variable
 	Assigned  *Assignment     `json:",omitempty"`         // optional asisgnment for this config, will be empty for empty config prototypes
 	Metadata  *RunnerMetadata `json:"metadata,omitempty"` // optional metadata for the runner which may contain an icon (svg) and/or documentation links
