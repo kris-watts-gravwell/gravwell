@@ -34,6 +34,9 @@ const (
 	Name    string = `okta`
 	ID      string = `okta.ingesters.gravwell.io`
 	Version string = `1.0.0` // must be canonical version string with only major.minor.point
+	// Description is one sentence on what this ingester collects, shown next to its name
+	// wherever a kind is offered for configuration.
+	Description string = `Polls the Okta System Log and Users APIs and ingests authentication events and user records.`
 
 	httpBackoff = 10 * time.Second
 	httpTimeout = 5 * time.Second

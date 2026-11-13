@@ -630,8 +630,9 @@ func testStoreStatusSince(t *testing.T, s Store) {
 	}
 }
 
-// testStoreForgetIngester covers the whole of forgetting: registrations, reported statuses
-// and the ingester record all go, and runners do not. A runner pinned to the forgotten
+// testStoreForgetIngester covers the whole of forgetting: registrations and reported
+// statuses go, the ingester record may go or stay (a store that keeps it lists the
+// ingester with no kinds), and runners do not. A runner pinned to the forgotten
 // UUID keeps its pin, because forgetting a box that has gone away must not quietly rewrite
 // what an operator asked for.
 func testStoreForgetIngester(t *testing.T, s Store) {
@@ -666,10 +667,10 @@ func testStoreForgetIngester(t *testing.T, s Store) {
 		t.Fatalf("failed to forget %v: %v", gone, err)
 	}
 
-	// the ingester record
+	// the ingester record: removed, or kept and advertising nothing
 	for _, ing := range mustIngesters(t, s) {
-		if ing.UUID == gone {
-			t.Error("the forgotten ingester is still listed")
+		if ing.UUID == gone && len(ing.Kinds) != 0 {
+			t.Errorf("the forgotten ingester is still listed advertising %v", ing.Kinds)
 		}
 	}
 	// its registrations, both through the per-ingester view and the catalog

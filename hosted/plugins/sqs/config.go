@@ -18,9 +18,12 @@ import (
 )
 
 const (
-	Name                   string = `sqs`
-	ID                     string = `sqs.ingesters.gravwell.io`
-	Version                string = `1.0.0`
+	Name    string = `sqs`
+	ID      string = `sqs.ingesters.gravwell.io`
+	Version string = `1.0.0`
+	// Description is one sentence on what this ingester collects, shown next to its name
+	// wherever a kind is offered for configuration.
+	Description            string = `Reads messages from an Amazon SQS queue and ingests each message as an entry.`
 	defaultIngesterUUIDStr string = "dc482963-7190-4014-8f7f-cdcbe8361bff"
 )
 

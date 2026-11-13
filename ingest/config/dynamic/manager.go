@@ -29,11 +29,10 @@ import (
 )
 
 var (
-	ErrSingletonRegistered = errors.New("singleton runner of the same type already registered")
-	ErrUnknownKind         = errors.New("runner kind unsupported, no registration kind found")
-	ErrKindRegistered      = errors.New("runner kind already registered")
-	ErrRunnerRegistered    = errors.New("runner of the same kind and name already registered")
-	ErrInvalidRunner       = errors.New("runner configuration is not usable")
+	ErrUnknownKind      = errors.New("runner kind unsupported, no registration kind found")
+	ErrKindRegistered   = errors.New("runner kind already registered")
+	ErrRunnerRegistered = errors.New("runner of the same kind and name already registered")
+	ErrInvalidRunner    = errors.New("runner configuration is not usable")
 )
 
 // validationSection is the INI section name a definition is rendered under when it is
@@ -303,8 +302,7 @@ func (n *NopManager) lookupKindLocked(kind string) (rk registeredKind, ok bool) 
 // RegisterRunner registers a complete runner with a given name, kind, UUID, and fully populated config block
 // If the UUID is empty one is generated, the kind is validated agains the Available list, if no
 // available registration is present RegisterRunner rejects the registration.
-// If the registered kind is marked as a singleton and an existing Kind already exists
-// the registration is rejected.  Upon successful registration the the complete RunnerDefinition is
+// Upon successful registration the the complete RunnerDefinition is
 // translated to a INI block and written to a .conf file in the storage directory
 func (n *NopManager) RegisterRunner(name, kind string, guid uuid.UUID, v any) (err error) {
 	n.mtx.Lock()
@@ -344,14 +342,12 @@ func (n *NopManager) prepareRunnerLocked(name, kind string, guid uuid.UUID, v an
 		return
 	}
 
-	// a singleton kind can only be configured once, everything else just has to be
-	// uniquely named within its kind
+	// a runner has to be uniquely named within its kind.  A singleton kind is no
+	// different here: singleton says each configuration is delivered to exactly one
+	// runner, see RunnerDefinition.Singleton, not that only one may be configured.
 	for _, cur := range n.Configured {
 		if cur.Kind != rd.Kind {
 			continue
-		} else if def.Singleton {
-			err = fmt.Errorf("%w %q", ErrSingletonRegistered, rd.Kind)
-			return
 		} else if cur.Name == rd.Name {
 			err = fmt.Errorf("%w %q %q", ErrRunnerRegistered, rd.Kind, rd.Name)
 			return

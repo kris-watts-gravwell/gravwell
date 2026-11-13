@@ -192,3 +192,43 @@ func TestAssignmentHelpers(t *testing.T) {
 		t.Error(`empty lists should not filter`)
 	}
 }
+
+// TestRunnerQueryMatchesSingleton covers the singleton exception: a singleton matches
+// only while it is pinned to exactly one UUID, so an unpinned one reaches nobody rather
+// than every ingester that registered its kind, and the usual filters still apply to the
+// one it is pinned to.
+func TestRunnerQueryMatchesSingleton(t *testing.T) {
+	mine, other := uuid.New(), uuid.New()
+	q := RunnerQuery{ID: mine, Class: `hosted`, Kinds: []string{`okta`}, Groups: []string{`eu`}}
+	single := func(a *Assignment) RunnerDefinition {
+		return RunnerDefinition{Kind: `okta`, Name: `n`, Singleton: true, Assigned: a}
+	}
+
+	for _, tc := range []struct {
+		name string
+		rd   RunnerDefinition
+		want bool
+	}{
+		{`unassigned singleton reaches nobody`, single(nil), false},
+		{`empty assignment is still unpinned`, single(&Assignment{}), false},
+		{`a class alone is not a pin`, single(&Assignment{Classes: []string{`hosted`}}), false},
+		{`a group alone is not a pin`, single(&Assignment{Group: `eu`}), false},
+		{`pinned to us`, single(&Assignment{UUIDs: []uuid.UUID{mine}}), true},
+		{`pinned to someone else`, single(&Assignment{UUIDs: []uuid.UUID{other}}), false},
+		{`pinned to two is not a singleton pin`, single(&Assignment{UUIDs: []uuid.UUID{mine, other}}), false},
+		{`pinned to us, class still filters`, single(&Assignment{UUIDs: []uuid.UUID{mine}, Classes: []string{`edge`}}), false},
+		{`pinned to us, group still filters`, single(&Assignment{UUIDs: []uuid.UUID{mine}, Group: `us`}), false},
+		{`pinned to us and every filter passes`, single(&Assignment{UUIDs: []uuid.UUID{mine}, Classes: []string{`hosted`}, Group: `eu`}), true},
+		{`pinned to us but a kind we cannot run`, RunnerDefinition{Kind: `wiz`, Name: `n`, Singleton: true,
+			Assigned: &Assignment{UUIDs: []uuid.UUID{mine}}}, false},
+	} {
+		if got := q.Matches(tc.rd); got != tc.want {
+			t.Errorf("%s: Matches = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// the same runner without the flag keeps the ordinary meaning of unassigned
+	if !q.Matches(RunnerDefinition{Kind: `okta`, Name: `n`}) {
+		t.Error("an unassigned non-singleton no longer reaches an ingester that can run it")
+	}
+}

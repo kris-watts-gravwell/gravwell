@@ -79,7 +79,7 @@ type agentMetadata struct {
 // not kept; the API sets them.
 type resourceFields struct {
 	ID       string    `json:"ID,omitzero"`
-	ParentID string    `json:"ParentID,omitzero"`
+	ParentID string    `json:"ParentID,omitempty"`
 	OwnerID  int32     `json:"OwnerID,omitzero"`
 	Readers  types.ACL `json:"Readers,omitzero"`
 	Writers  types.ACL `json:"Writers,omitzero"`

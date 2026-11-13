@@ -48,6 +48,9 @@
 		{{.Kind}}
 		{{- if .Version }} <span class="ver">v{{.Version}}</span>{{ end -}}
 	</span>
+	{{- if .Description }}
+	<span class="sub desc">{{.Description}}</span>
+	{{- end }}
 	<span class="sub">{{.Vars}} setting{{if ne .Vars 1}}s{{end}}{{if .Singleton}} &middot; singleton{{end}}</span>
 	{{- if .Docs }}
 	<span class="sub docs">
@@ -189,6 +192,7 @@
 	{{- if .HasIcon }}{{.Icon}}{{ end }}
 	<span class="kindname">{{.Kind}}</span>
 	{{- if .Version }}<span class="ver">v{{.Version}}</span>{{ end }}
+	{{- if .Description }}<span class="desc">{{.Description}}</span>{{ end }}
 	{{- if .Docs }}<span class="docs">
 		{{- range .Docs }}<a href="{{.Link}}" target="_blank" rel="noopener noreferrer">{{.Name}}</a>{{ end -}}
 	</span>{{ end }}
@@ -204,9 +208,15 @@
 		</label>
 		<div class="assign">
 			<span class="lbl">Assignment</span>
+			{{- if .Singleton }}
+			<span class="hint">{{.Kind}} is a singleton: each configuration is delivered to exactly
+				one ingester, so pick one below. Several configurations of {{.Kind}} may exist,
+				each pinned to its own ingester.</span>
+			{{- else }}
 			<span class="hint">Leave both empty to send this configuration to every ingester that can
 				run {{.Kind}}. Each list that has anything selected becomes a filter, and an
 				ingester has to satisfy every filter to receive the configuration.</span>
+			{{- end }}
 			<div class="two">
 				<label>
 					<span class="lbl">Ingesters</span>

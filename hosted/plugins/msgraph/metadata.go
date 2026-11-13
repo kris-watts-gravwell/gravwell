@@ -13,6 +13,7 @@ import "github.com/gravwell/gravwell/v4/ingest/config/dynamic"
 // DocLinks are the places to read about this plugin, shown next to it in a configuration
 // interface.  Nothing here is load bearing, a link that goes stale costs a click.
 var DocLinks = []dynamic.DocLink{
+	{Name: `documentation`, Link: `https://docs.gravwell.io/ingesters/msg.html`},
 	{Name: `source`, Link: `https://github.com/gravwell/gravwell/tree/main/hosted/plugins/msgraph`},
 }
 
@@ -30,5 +31,6 @@ func (c *Config) RunnerMetadata() *dynamic.RunnerMetadata {
 		Icon:          Icon,
 		Documentation: DocLinks,
 		Version:       dynamic.Version(Version),
+		Description:   Description,
 	}
 }

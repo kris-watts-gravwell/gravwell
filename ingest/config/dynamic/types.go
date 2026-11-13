@@ -118,7 +118,7 @@ type RunnerDefinition struct {
 	Kind      string    // what configuration type this represents
 	Name      string    // config name (key in config map for a given Kind)
 	UUID      uuid.UUID `json:",omitzero"`
-	Singleton bool      // whether more than one of this Kind can run at a time
+	Singleton bool      // each configuration of this Kind is delivered to exactly one runner, see RunnerQuery.Matches
 	Variables []Variable
 	Assigned  *Assignment     `json:",omitempty"`         // optional asisgnment for this config, will be empty for empty config prototypes
 	Metadata  *RunnerMetadata `json:"metadata,omitempty"` // optional metadata for the runner which may contain an icon (svg) and/or documentation links
@@ -133,6 +133,7 @@ type RunnerMetadata struct {
 	Icon          string                 `json:"icon,omitempty"`          // optional SVG icon for the ingester
 	Documentation []DocLink              `json:"documentation,omitempty"` // links to integration guides or ingester documentation
 	Version       types.CanonicalVersion `json:"version,omitzero"`        // the plugin's own version, zero when it does not declare one
+	Description   string                 `json:"description,omitempty"`   // one sentence on what the ingester collects, for a picker to show next to its name
 }
 
 // MetadataProvider is an OPTIONAL interface a plugin config may implement to describe

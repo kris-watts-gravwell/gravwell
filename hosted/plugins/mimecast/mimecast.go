@@ -35,6 +35,9 @@ const (
 	Name    string = `mimecast`
 	ID      string = `mimecast.ingesters.gravwell.io`
 	Version string = `1.0.0`
+	// Description is one sentence on what this ingester collects, shown next to its name
+	// wherever a kind is offered for configuration.
+	Description string = `Polls the Mimecast Audit and MTA SIEM APIs and ingests email security events.`
 )
 
 type Mimecast struct {

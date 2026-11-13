@@ -21,10 +21,13 @@ import (
 )
 
 const (
-	Tag                    string = `test`
-	Name                   string = `tester`
-	ID                     string = `tester.ingesters.gravwell.io`
-	Version                string = `1.0.0` // must be canonical version string with only major.minor.point
+	Tag     string = `test`
+	Name    string = `tester`
+	ID      string = `tester.ingesters.gravwell.io`
+	Version string = `1.0.0` // must be canonical version string with only major.minor.point
+	// Description is one sentence on what this ingester collects, shown next to its name
+	// wherever a kind is offered for configuration.
+	Description            string = `Generates synthetic entries at a fixed interval to verify that hosted ingestion works end to end.`
 	defaultIngesterUUIDStr string = "4f1c35f6-6af6-4103-8fdc-df2c63026f0d"
 )
 

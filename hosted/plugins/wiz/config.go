@@ -251,3 +251,10 @@ func (c *Config) tagFor(sourceName string) string {
 	}
 	return c.Tag_Name
 }
+
+// Singleton implements plugins.SingletonConfig: each configuration of this kind is
+// delivered to exactly one ingester.  This plugin polls an API with a cursor, so the same
+// configuration running on two ingesters would ingest every event twice.
+func (c *Config) Singleton() bool { return true }
+
+var _ interface{ Singleton() bool } = (*Config)(nil) // compile time interface check

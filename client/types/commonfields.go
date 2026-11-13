@@ -78,7 +78,7 @@ type CommonFields struct {
 	// It is server-managed. Any value sent by a client is ignored on write.
 	DeletedAt Nullable[time.Time]
 	ID        string
-	// the parent object this was cloned from.
+	// ParentID is the asset this one was cloned from; null when it has none.
 	// Not user settable.
 	ParentID Nullable[string]
 

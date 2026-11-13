@@ -65,14 +65,18 @@ func TestRegisterDynamicPluginTypes(t *testing.T) {
 		t.Fatalf("registered %v, want every plugin in Configs %v", got, want)
 	}
 
-	// a kind is a description, it carries no identity and every plugin can run more than
-	// one instance at a time, so none of them are singletons
+	// a kind is a description, it carries no identity, and whether it is a singleton is
+	// whatever its config type declared, see plugins.SingletonConfig
+	singleton := map[string]bool{}
+	for _, pk := range mustKinds(t) {
+		singleton[pk.Kind] = pk.Singleton
+	}
 	for _, rd := range nm.Available {
 		if rd.Name != `` || rd.UUID != uuid.Nil() {
 			t.Errorf("%s: a kind should carry no identity, got name %q uuid %v", rd.Kind, rd.Name, rd.UUID)
 		}
-		if rd.Singleton {
-			t.Errorf("%s: plugins are held in maps, none of them are singletons", rd.Kind)
+		if rd.Singleton != singleton[rd.Kind] {
+			t.Errorf("%s: registered singleton = %v, the config type says %v", rd.Kind, rd.Singleton, singleton[rd.Kind])
 		}
 		if len(rd.Variables) == 0 {
 			t.Errorf("%s: registered with no variables, its config did not enumerate", rd.Kind)
@@ -148,7 +152,9 @@ func TestDynamicRunnerLoadsEveryPluginConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// two instances of every plugin, the names have to survive as the map keys
+	// two instances of every plugin, the names have to survive as the map keys.  A
+	// singleton kind is no exception: singleton says each configuration is delivered
+	// to exactly one runner, not that only one may be configured.
 	names := []string{`prod`, `dev`}
 	for _, pk := range kinds {
 		for _, name := range names {
@@ -483,4 +489,14 @@ func statusOf(dm dynamic.Manager, id uuid.UUID) (dynamic.RunnerStatus, bool) {
 		}
 	}
 	return dynamic.RunnerStatus{}, false
+}
+
+// mustKinds is plugins.Kinds or a fatal test.
+func mustKinds(t *testing.T) []plugins.PluginKind {
+	t.Helper()
+	kinds, err := plugins.Kinds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kinds
 }

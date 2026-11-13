@@ -91,9 +91,12 @@ type Store interface {
 	// rather than asking an operator to remember what they called things.
 	Classes() ([]string, error)
 
-	// ForgetIngester removes everything held about one ingester: its registrations, the
-	// statuses it reported, and the ingester record itself.  All of it or none of it, in
-	// one transaction.
+	// ForgetIngester removes what one ingester reported: its registrations and the
+	// statuses it reported, all of it or none of it, in one transaction.  The ingester
+	// record itself may be kept or removed, the backend's choice: one that keeps it goes
+	// on listing the ingester as known, offline and registering nothing, which is what an
+	// operator who forgot a box still wants to see.  Either way a forgotten ingester is no
+	// longer offered as a target for any kind.
 	//
 	// Runners are not touched.  A runner pinned to this UUID keeps its pin and is reported
 	// as naming an unknown target, the same as any other pin to an ingester that has not

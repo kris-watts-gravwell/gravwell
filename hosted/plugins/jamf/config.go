@@ -17,8 +17,8 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
-	"strings"
 	"slices"
+	"strings"
 
 	"github.com/gravwell/gravwell/v4/hosted"
 )
@@ -162,7 +162,7 @@ func (c *Config) tagForSection(section string) string {
 		return c.Tag_Name
 	}
 	prefix := cmp.Or(c.Tag_Prefix, defaultTagPrefix)
-	return prefix + "-" + strings.Replace(strings.ToLower(section),"_","-",-1)
+	return prefix + "-" + strings.Replace(strings.ToLower(section), "_", "-", -1)
 }
 
 // Tags returns every tag this plugin instance can write to, one per
@@ -175,3 +175,9 @@ func (c *Config) Tags() []string {
 	return tags
 }
 
+// Singleton implements plugins.SingletonConfig: each configuration of this kind is
+// delivered to exactly one ingester.  This plugin polls an API with a cursor, so the same
+// configuration running on two ingesters would ingest every event twice.
+func (c *Config) Singleton() bool { return true }
+
+var _ interface{ Singleton() bool } = (*Config)(nil) // compile time interface check

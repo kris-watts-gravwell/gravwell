@@ -97,13 +97,22 @@ type runnerView struct {
 
 // kindView is a registered kind as the menu draws it.
 type kindView struct {
-	Kind      string
-	Vars      int
-	Singleton bool
-	Version   string // empty when the plugin does not declare one
-	Icon      template.HTML
-	HasIcon   bool
-	Docs      []dynamic.DocLink
+	Kind        string
+	Vars        int
+	Singleton   bool
+	Version     string // empty when the plugin does not declare one
+	Description string // empty when the plugin does not declare one
+	Icon        template.HTML
+	HasIcon     bool
+	Docs        []dynamic.DocLink
+}
+
+// descriptionOf is the sentence a plugin offers about itself, or nothing.
+func descriptionOf(md *dynamic.RunnerMetadata) string {
+	if md == nil {
+		return ``
+	}
+	return md.Description
 }
 
 // iconFor renders a kind's icon, if it has one that survives sanitizing.  The markup is
@@ -268,10 +277,12 @@ type formView struct {
 
 	// the kind's own description, so the form says what is being configured rather than
 	// only naming it
-	Icon    template.HTML
-	HasIcon bool
-	Version string
-	Docs    []dynamic.DocLink
+	Icon        template.HTML
+	HasIcon     bool
+	Version     string
+	Description string
+	Docs        []dynamic.DocLink
+	Singleton   bool // each configuration of this kind goes to exactly one ingester
 
 	// Targets are the ingesters that registered this kind, the only ones worth pinning a
 	// configuration of it to.  Selected marks the ones this runner is already pinned to.
@@ -328,10 +339,11 @@ func (u *UI) kinds(w http.ResponseWriter, r *http.Request) {
 	out := make([]kindView, 0, len(kinds))
 	for _, rd := range kinds {
 		kv := kindView{
-			Kind:      rd.Kind,
-			Vars:      len(rd.Variables),
-			Singleton: rd.Singleton,
-			Version:   versionOf(rd.Metadata),
+			Kind:        rd.Kind,
+			Vars:        len(rd.Variables),
+			Singleton:   rd.Singleton,
+			Version:     versionOf(rd.Metadata),
+			Description: descriptionOf(rd.Metadata),
 		}
 		kv.Icon, kv.HasIcon = iconFor(rd.Metadata)
 		if rd.Metadata != nil {
@@ -764,6 +776,11 @@ func (u *UI) editRunner(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
+	u.renderEdit(w, cur)
+}
+
+// renderEdit draws the form for a runner that already exists.
+func (u *UI) renderEdit(w http.ResponseWriter, cur dynamic.RunnerDefinition) {
 	proto, err := u.store.Kind(cur.Kind)
 	if err != nil {
 		// the runner outlived its registration, which happens when an ingester that
@@ -831,6 +848,14 @@ func (u *UI) save(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, err)
 		return
 	}
+	// a singleton configuration is delivered to exactly one ingester.  The matcher on
+	// the poll already refuses to deliver one that is not pinned, so an unpinned save
+	// would be accepted and then silently reach nobody; refuse it here where the
+	// operator can see why.  See dynamic.RunnerQuery.Matches.
+	if proto.Singleton && (assigned == nil || len(assigned.UUIDs) != 1) {
+		u.fail(w, fmt.Errorf("%s is a singleton: each configuration must be assigned to exactly one ingester", proto.Kind))
+		return
+	}
 	rd := dynamic.RunnerDefinition{
 		Kind:      proto.Kind,
 		Name:      name,
@@ -890,6 +915,8 @@ func (u *UI) save(w http.ResponseWriter, r *http.Request) {
 func (u *UI) describe(fv *formView, proto dynamic.RunnerDefinition) {
 	fv.Icon, fv.HasIcon = iconFor(proto.Metadata)
 	fv.Version = versionOf(proto.Metadata)
+	fv.Description = descriptionOf(proto.Metadata)
+	fv.Singleton = proto.Singleton
 	if proto.Metadata != nil {
 		fv.Docs = proto.Metadata.Documentation
 	}
