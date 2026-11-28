@@ -16,12 +16,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -288,37 +290,43 @@ func TestRFC5424HandlerStalledTLSHandshake(t *testing.T) {
 	}
 }
 
-// TestAcceptorDropsSilentTLSClient runs the full acceptor path and checks that
-// a client which connects to a TLS listener and says nothing gets disconnected
-// and leaves no handler behind.
+// TestAcceptorDropsSilentTLSClient runs the full acceptor path for every reader
+// type and checks that a client which connects to a TLS listener and says
+// nothing gets disconnected and leaves no handler behind.  Only the RFC5424
+// reader has the pumper to fall back on, the others depend entirely on the up
+// front handshake deadline.
 func TestAcceptorDropsSilentTLSClient(t *testing.T) {
-	cfg, cw := testHandlerConfig(t)
-	addr := startTestAcceptor(t, cfg, testTLSConfig(t))
-	base := connCount()
+	readers := map[string]readerType{
+		"line":    lineReader,
+		"rfc6587": rfc6587Reader,
+		"rfc5424": rfc5424Reader,
+	}
+	for name, lrt := range readers {
+		t.Run(name, func(t *testing.T) {
+			cfg, cw := testHandlerConfig(t)
+			cfg.lrt = lrt
+			addr := startTestAcceptor(t, cfg, testTLSConfig(t))
+			base := connCount()
 
-	cli, err := net.Dial("tcp", addr.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cli.Close()
+			cli, err := net.Dial("tcp", addr.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cli.Close()
 
-	// the server should hang up on us shortly after the handshake timeout
-	cli.SetReadDeadline(time.Now().Add(10 * testHandshakeTimeout))
-	if _, err = cli.Read(make([]byte, 16)); err == nil {
-		t.Fatal("server sent data to a client that never handshook")
-	} else if isTimeout(err) {
-		t.Fatal("server never dropped a client that did not handshake")
-	}
-	// the hangup can reach us a hair before the server finishes its bookkeeping
-	deadline := time.Now().Add(2 * time.Second)
-	for connCount() != base && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if n := connCount(); n != base {
-		t.Fatalf("connection count is %d, wanted %d", n, base)
-	}
-	if ents := cw.entries(); len(ents) != 0 {
-		t.Fatalf("ingested %d entries from a client that sent nothing: %q", len(ents), ents)
+			// the server should hang up on us shortly after the handshake timeout
+			cli.SetReadDeadline(time.Now().Add(10 * testHandshakeTimeout))
+			if _, err = cli.Read(make([]byte, 16)); err == nil {
+				t.Fatal("server sent data to a client that never handshook")
+			} else if isTimeout(err) {
+				t.Fatal("server never dropped a client that did not handshake")
+			}
+			// the hangup can reach us a hair before the server finishes its bookkeeping
+			waitForConnCount(t, base)
+			if ents := cw.entries(); len(ents) != 0 {
+				t.Fatalf("ingested %d entries from a client that sent nothing: %q", len(ents), ents)
+			}
+		})
 	}
 }
 
@@ -572,5 +580,88 @@ func waitForConnCount(t *testing.T, want int) {
 	}
 	if n := connCount(); n != want {
 		t.Fatalf("connection count is %d, wanted %d", n, want)
+	}
+}
+
+// staleTimeoutConn is a connection whose Read fails instantly with a timeout,
+// the way a connection replaying a stored deadline error does.
+type staleTimeoutConn struct {
+	net.Conn
+	reads int
+}
+
+func (c *staleTimeoutConn) Read([]byte) (int, error) {
+	c.reads++
+	return 0, os.ErrDeadlineExceeded
+}
+
+func (c *staleTimeoutConn) SetReadDeadline(time.Time) error { return nil }
+
+// TestPumperEarlyTimeout covers the elapsed time backstop in the pumper on its
+// own, with no TLS involved: a timeout that comes back without having waited
+// out the deadline is not an idle tick and must be returned as an error.
+func TestPumperEarlyTimeout(t *testing.T) {
+	conn := &staleTimeoutConn{}
+	pumper := newReadTimeoutPumper(conn, time.Minute)
+	n, err := pumper.Read(make([]byte, 16))
+	if err == nil {
+		t.Fatalf("pumper reported an idle tick (%d bytes) for a timeout that never waited", n)
+	} else if !isTimeout(err) {
+		t.Fatalf("pumper returned %v, wanted the timeout passed through", err)
+	} else if conn.reads != 1 {
+		t.Fatalf("pumper read %d times, wanted 1", conn.reads)
+	}
+}
+
+// TestHandshakeNoise checks which handshake failures are quiet (info) and
+// which are worth a warning, using errors from real handshakes where it can.
+func TestHandshakeNoise(t *testing.T) {
+	testHandlerConfig(t) // shortens the handshake timeout
+
+	// handshakeErr runs a server side handshake against whatever the client does
+	handshakeErr := func(client func(net.Conn)) error {
+		t.Helper()
+		lst, err := tls.Listen("tcp", "127.0.0.1:0", testTLSConfig(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lst.Close()
+		cli, err := net.Dial("tcp", lst.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cli.Close()
+		srv, err := lst.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Close()
+		go client(cli)
+		return tlsHandshake(context.Background(), srv)
+	}
+
+	tests := []struct {
+		name  string
+		err   error
+		noise bool
+	}{
+		{"silent client", handshakeErr(func(net.Conn) {}), true},
+		{"client hangs up", handshakeErr(func(c net.Conn) { c.Close() }), true},
+		{"plain text on a TLS port", handshakeErr(func(c net.Conn) {
+			io.WriteString(c, "<34>1 2026-11-25T10:00:00Z host app - - - not tls\n")
+		}), false},
+		{"client rejects our certificate", handshakeErr(func(c net.Conn) {
+			tls.Client(c, &tls.Config{ServerName: "localhost"}).Handshake()
+		}), false},
+		{"shutdown closed the connection", net.ErrClosed, true},
+		{"wrapped reset", fmt.Errorf("read: %w", syscall.ECONNRESET), true},
+		{"generic failure", errors.New("tls: no cipher suite supported by both client and server"), false},
+	}
+	for _, tc := range tests {
+		if tc.err == nil {
+			t.Fatalf("%s: handshake unexpectedly succeeded", tc.name)
+		} else if got := handshakeNoise(tc.err); got != tc.noise {
+			t.Errorf("%s: handshakeNoise(%v) = %v, wanted %v", tc.name, tc.err, got, tc.noise)
+		}
 	}
 }

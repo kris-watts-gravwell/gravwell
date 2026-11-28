@@ -11,10 +11,13 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gravwell/gravwell/v3/ingest"
@@ -190,7 +193,7 @@ func acceptor(lst net.Listener, id int, igst *ingest.IngestMuxer, cfg handlerCon
 		// every connection gets its own goroutine, the handshake and the handler
 		// both block and must never hold up the accept loop
 		cfg.wg.Go(func() {
-			handleConn(conn, cfg, tp)
+			handleConn(conn, cfg)
 		})
 	}
 }
@@ -199,11 +202,11 @@ func acceptor(lst net.Listener, id int, igst *ingest.IngestMuxer, cfg handlerCon
 // connection to the reader for this listener.  It blocks for the life of the
 // connection, which stays in the closer set the whole time so that shutdown
 // can always interrupt it.
-func handleConn(c net.Conn, cfg handlerConfig, tp bindType) {
+func handleConn(c net.Conn, cfg handlerConfig) {
 	id := addConn(c)
 	defer delConn(id)
 	defer c.Close()
-	if err := tlsHandshake(c, cfg.ctx); err != nil {
+	if err := tlsHandshake(cfg.ctx, c); err != nil {
 		logHandshakeFailure(c, cfg.name, err)
 		return
 	}
@@ -220,15 +223,17 @@ func handleConn(c net.Conn, cfg handlerConfig, tp bindType) {
 }
 
 // tlsHandshakeTimeout is how long a TLS client on any listener type gets to
-// complete its handshake before we drop it.  It is a variable rather than a
-// constant so that tests can shorten it.
-var tlsHandshakeTimeout time.Duration = 5 * time.Second
+// complete its handshake before we drop it.  It is generous on purpose: some
+// senders connect early and only handshake on their first write, and a stalled
+// handshake costs nothing but an idle goroutine and a file descriptor.  It is a
+// variable rather than a constant so that tests can shorten it.
+var tlsHandshakeTimeout time.Duration = 60 * time.Second
 
 // tlsHandshake completes the TLS handshake on TLS connections under
 // tlsHandshakeTimeout so that a peer which connects and never speaks TLS cannot
 // park a handler.  It is a no-op for everything else.  The caller must already
 // have the connection in the closer set so that shutdown can interrupt it.
-func tlsHandshake(c net.Conn, ctx context.Context) error {
+func tlsHandshake(ctx context.Context, c net.Conn) error {
 	tc, ok := c.(*tls.Conn)
 	if !ok {
 		return nil
@@ -238,10 +243,35 @@ func tlsHandshake(c net.Conn, ctx context.Context) error {
 	return tc.HandshakeContext(ctx)
 }
 
-// logHandshakeFailure is deliberately at info, port scanners and TCP health
-// checks fail the handshake constantly and are not worth a warning each.
+// logHandshakeFailure logs at info when the peer just went quiet or went away,
+// port scanners and TCP health checks do that constantly and are not worth a
+// warning each.  Anything else (bad certificate, protocol mismatch, plain text
+// sent to a TLS port) is likely a misconfigured sender and gets a warning.
 func logHandshakeFailure(c net.Conn, listener string, err error) {
-	lg.Info("tls handshake failed", log.KV("address", c.RemoteAddr()), log.KV("listener", listener), log.KVErr(err))
+	logf := lg.Warn
+	if handshakeNoise(err) {
+		logf = lg.Info
+	}
+	logf("tls handshake failed", log.KV("address", c.RemoteAddr()), log.KV("listener", listener), log.KVErr(err))
+}
+
+// handshakeNoise reports whether a handshake error only says that the peer
+// stalled, hung up, or that we closed the connection ourselves.
+func handshakeNoise(err error) bool {
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return true
+	}
+	for _, noise := range []error{
+		io.EOF, io.ErrUnexpectedEOF,
+		context.DeadlineExceeded, context.Canceled,
+		net.ErrClosed, syscall.ECONNRESET, syscall.EPIPE,
+	} {
+		if errors.Is(err, noise) {
+			return true
+		}
+	}
+	return false
 }
 
 func acceptorUDP(conn *net.UDPConn, id int, cfg handlerConfig, igst *ingest.IngestMuxer) {

@@ -275,7 +275,7 @@ func jsonConnHandler(c net.Conn, cfg jsonHandlerConfig, igst *ingest.IngestMuxer
 	id := addConn(c)
 	defer delConn(id)
 	defer c.Close()
-	if err := tlsHandshake(c, cfg.ctx); err != nil {
+	if err := tlsHandshake(cfg.ctx, c); err != nil {
 		logHandshakeFailure(c, cfg.name, err)
 		return
 	}

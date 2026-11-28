@@ -272,7 +272,7 @@ func regexConnHandler(c net.Conn, cfg regexHandlerConfig, igst *ingest.IngestMux
 	id := addConn(c)
 	defer delConn(id)
 	defer c.Close()
-	if err := tlsHandshake(c, cfg.ctx); err != nil {
+	if err := tlsHandshake(cfg.ctx, c); err != nil {
 		logHandshakeFailure(c, cfg.name, err)
 		return
 	}
